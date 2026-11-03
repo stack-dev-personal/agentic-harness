@@ -277,6 +277,35 @@ select doc_collection, doc_title, vector_similarity, left(chunk_content, 120)
 from rag.search(query_text => 'retrieval ranking', match_count => 5);
 ```
 
+### Codex desktop and CLI
+
+Both Codex clients read `~/.codex/config.toml`. Build the MCP server above, then
+register it once (adjust paths for the machine):
+
+```toml
+[mcp_servers.rag]
+command = "C:/Program Files/nodejs/node.exe"
+args = ["C:/Users/you/agentic-harness/mcp-server/dist/index.js"]
+cwd = "C:/Users/you/agentic-harness/mcp-server"
+
+[mcp_servers.rag.env]
+HARNESS_ENV_FILE = "C:/Users/you/agentic-harness/.env"
+```
+
+Restart Codex desktop after changing the MCP config. `codex mcp list` confirms
+the CLI registration; ask Codex to call `rag.search_context` for an end-to-end
+check. The `.env` stays in the harness checkout, not in the TOML file.
+
+For the start brief and chat capture, register `hooks/codex-session-start.mjs`
+as a `SessionStart` command (matcher `startup|resume`) and
+`hooks/codex-session-capture.mjs` as a `SessionEnd` command in
+`~/.codex/hooks.json`, then trust both in Codex's Hooks review. On
+Windows, run `scripts/register-codex-ingest.ps1` once: the hook queues each new
+vault note and starts a scheduled task to index it outside Codex's short hook
+lifetime. The task also captures missed main chats after six hours idle and
+retries pending notes daily at 03:15. See
+[hooks/README.md](./hooks/README.md) for the exact JSON and logs.
+
 ---
 
 ## Windows path gotcha

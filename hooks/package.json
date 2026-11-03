@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Claude Code SessionEnd capture hook: one session, one vault note.",
+  "description": "Claude Code and Codex session capture: one session, one vault note.",
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "goldens": "node tests/update-goldens.mjs",

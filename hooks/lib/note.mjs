@@ -117,11 +117,11 @@ export function buildFields(ctx) {
     files_modified: ctx.files.map((file) => file.path),
     prompt_count: ctx.prompts.length,
     command_count: ctx.commandCount,
-    agent: 'claude-code',
+    agent: ctx.agent ?? 'claude-code',
     agent_type: ctx.agentType ?? '',
     origin: ctx.origin ?? '',
     captured_by: ctx.capturedBy ?? CAPTURED_BY_HOOK,
-    generator: `session-capture.mjs ${GENERATOR_VERSION}`,
+    generator: ctx.generator ?? `session-capture.mjs ${GENERATOR_VERSION}`,
     tools_used: Object.fromEntries(ctx.toolCounts),
     // Placeholders: `withLinks` derives both after the merge, at the write.
     up: '',

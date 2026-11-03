@@ -24,6 +24,8 @@
  *
  * Installed to `~/.claude/hooks/` by `node hooks/install.mjs` like the capture
  * hook; edit it here, never there. Disable: HARNESS_SESSION_START=0.
+ * Codex runs the same hook through codex-session-start.mjs: its
+ * `session-start.command.output` schema accepts this same JSON shape.
  */
 
 import os from 'node:os';
@@ -198,8 +200,14 @@ function readStdinText(stream, waitMs, log) {
   });
 }
 
+/** Claude Code's log; the Codex entry point passes its own (codex-session-start.mjs). */
+export const CLAUDE_LOG_PATH = path.join(os.homedir(), '.claude', 'hooks', 'session-start.log');
+
+/** Where this process logs when HARNESS_SESSION_START_LOG is unset; set by startHookProcess. */
+let fallbackLogPath = CLAUDE_LOG_PATH;
+
 function defaultLogPath(env) {
-  return env[LOG_ENV_VAR] || path.join(os.homedir(), '.claude', 'hooks', 'session-start.log');
+  return env[LOG_ENV_VAR] || fallbackLogPath;
 }
 
 async function main() {
@@ -247,7 +255,13 @@ function onFatal(error) {
   answerAndExit(EMPTY_OUTPUT);
 }
 
-if (isEntryPoint(import.meta.url)) {
+/**
+ * Run as a hook process: read stdin, answer once, exit 0. Claude Code's entry
+ * point (below) and Codex's (codex-session-start.mjs) both call this; they
+ * differ only in where the log goes when HARNESS_SESSION_START_LOG is unset.
+ */
+export function startHookProcess({ logPath = CLAUDE_LOG_PATH } = {}) {
+  fallbackLogPath = logPath;
   process.on('uncaughtException', onFatal);
   process.on('unhandledRejection', onFatal);
   main().then(answerAndExit, (error) => {
@@ -255,3 +269,5 @@ if (isEntryPoint(import.meta.url)) {
     answerAndExit(EMPTY_OUTPUT);
   });
 }
+
+if (isEntryPoint(import.meta.url)) startHookProcess();

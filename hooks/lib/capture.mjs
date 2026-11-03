@@ -190,7 +190,7 @@ export function capture({
 
 // -------------------------------------------------------------- the write
 
-function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
+export function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   const next = buildFields(context);
   // The head of the chain, not the base note: once an `-r2` exists it is the
   // one that carries the session's current state, and planning against the

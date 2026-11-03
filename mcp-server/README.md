@@ -1,6 +1,6 @@
 # RAG MCP Server
 
-stdio MCP server that gives Claude Code (and later Hermes Agent) read access to the
+stdio MCP server that gives Claude Code and Codex read access to the
 shared knowledge store: six months of migrated agent memory plus, in time, an Obsidian
 vault — in Supabase Postgres with pgvector, tagged by project or class.
 

@@ -307,7 +307,10 @@ test('code-mode apply_patch keeps only file names, never the patch body', () => 
   ], 'C:/work');
   const writes = parsed.entries.flatMap((entry) => entry.message?.content ?? [])
     .filter((block) => block?.name === 'Write').map((block) => block.input.file_path);
-  assert.deepEqual(writes, [path.resolve('C:/work', 'src/a.mjs'), String.raw`C:\work\new.md`]);
+  // The escaped backslashes decode to one each; a drive path is only absolute on Windows.
+  const added = String.raw`C:\work\new.md`;
+  assert.deepEqual(writes, [path.resolve('C:/work', 'src/a.mjs'),
+    path.isAbsolute(added) ? added : path.resolve('C:/work', added)]);
   const kept = JSON.stringify(parsed.entries.map((entry) => entry.message?.content).flat()
     .filter((block) => block?.name !== 'exec'));
   assert.ok(!kept.includes('PATCH-BODY-SECRET'));

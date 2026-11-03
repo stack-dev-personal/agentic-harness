@@ -1,11 +1,54 @@
 # `hooks/` — session capture
 
-One Claude Code session becomes one markdown note in the Obsidian vault, so the
-RAG store can answer questions about work that already happened.
+One Claude Code or Codex session becomes one markdown note in the Obsidian
+vault, so the RAG store can answer questions about work that already happened.
 
 The source of truth is this directory. `~/.claude/hooks/` holds a byte-identical
 deployed copy, installed by `node hooks/install.mjs`. Edit here, install, never
 the other way round.
+
+Codex points at this checkout directly through `~/.codex/hooks.json`; its
+capture uses the shared schema and note writer. It keeps user prompts, final
+answers, redacted command labels, touched file paths, and retrieval provenance.
+Raw tool output is excluded; RAG result text is read only to extract document
+identities and scores, as it is for Claude Code.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|resume",
+      "hooks": [{
+        "type": "command",
+        "command": "node C:/Users/you/agentic-harness/hooks/codex-session-start.mjs",
+        "timeout": 5
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "node C:/Users/you/agentic-harness/hooks/codex-session-capture.mjs",
+        "timeout": 3
+      }]
+    }]
+  }
+}
+```
+
+`codex-session-start.mjs` gives each new or resumed Codex chat the same start
+brief Claude Code gets from `session-start.mjs` (Codex accepts the same output
+JSON), and leaves the record that capture turns into a `session-start`
+retrieval. Its log is `~/.codex/hooks/session-start.log`.
+
+Trust both hooks through `/hooks` in the CLI or Settings > Hooks in desktop. On
+Windows, run `scripts/register-codex-ingest.ps1` once. Codex ends detached
+children when a hook exits, so the capture appends note paths to
+`~/.harness/codex-ingest-queue.jsonl` and starts the scheduled ingest task.
+The task also sweeps main Codex transcripts idle for at least six hours, then
+retries pending notes daily at 03:15. Codex subagent rollouts are excluded from
+that sweep because their user-role blocks contain inherited parent context.
+Logs are in
+`~/.codex/hooks/session-capture.log` and `ingest-queue.log`.
 
 ```
 hooks/

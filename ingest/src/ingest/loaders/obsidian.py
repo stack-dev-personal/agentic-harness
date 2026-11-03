@@ -11,7 +11,7 @@ emits one :class:`SourceDocument` per note.
   Prefer an ``id:`` in notes you expect to move. With a path-based key a rename
   is indistinguishable from delete-plus-create: the old row is stranded and a
   duplicate appears. A stable ``id:`` survives the rename.
-* ``agent``       = ``claude-code``
+* ``agent``       = a session note's validated ``agent:`` field, else ``claude-code``
 * ``metadata``    = the frontmatter verbatim, plus an ``_ingest`` sub-object.
   Ingest-added keys are nested under ``_ingest`` so they can never collide with
   a user's own frontmatter key named ``path`` or ``source``. The one key left
@@ -452,7 +452,7 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
         external_id=external_id,
         body=body,
         title=_derive_title(frontmatter, body, path),
-        agent=DEFAULT_AGENT,
+        agent=_derive_agent(frontmatter),
         collection=collection,
         metadata=metadata,
         retrievals=retrievals,
@@ -513,6 +513,15 @@ def _wants_ingest(frontmatter: dict) -> bool:
         f"frontmatter '{INGEST_KEY}' must be true or false, got {raw!r} "
         f"(accepted: true/false, yes/no, on/off, 1/0, or the quoted strings 'true'/'false')"
     )
+
+
+def _derive_agent(frontmatter: dict) -> str:
+    """Keep the producer of captured sessions without changing ordinary notes."""
+    if frontmatter.get("type") == "session":
+        candidate = frontmatter.get("agent")
+        if isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", candidate):
+            return candidate
+    return DEFAULT_AGENT
 
 
 def _derive_collection(frontmatter: dict, relative: str) -> str | None:

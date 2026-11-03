@@ -100,6 +100,18 @@ def test_source_and_agent_are_set(vault_path: Path):
         assert doc.agent == DEFAULT_AGENT
 
 
+def test_session_agent_comes_from_valid_frontmatter(tmp_path: Path):
+    note = tmp_path / "projects" / "demo" / "sessions" / "codex-example.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntype: session\nagent: codex\nid: session-codex-example\n---\n\n# Codex chat\n", encoding="utf-8")
+    doc = by_id(load_vault(tmp_path))["session-codex-example"]
+    assert doc.agent == "codex"
+    assert doc.metadata["agent"] == "codex"
+
+    note.write_text("---\ntype: session\nagent: 'bad value'\nid: session-codex-example\n---\n\n# Chat\n", encoding="utf-8")
+    assert by_id(load_vault(tmp_path))["session-codex-example"].agent == DEFAULT_AGENT
+
+
 def test_title_comes_from_frontmatter_then_h1(vault_path: Path):
     docs = by_id(load_vault(vault_path))
     assert docs["notes/rag-design.md"].title == "RAG Store Design"

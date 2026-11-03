@@ -345,12 +345,21 @@ function underRealmLocks({ candidate, vaultRoot, excludes, log }, work) {
   const head = readTranscriptHead(candidate.transcriptPath);
   const projectDirName = path.basename(path.dirname(candidate.transcriptPath));
   if (excludedBy(head.cwd, excludes, projectDirName)) return work();
+  return withRealmLocks({ cwd: head.cwd, vaultRoot, log }, work,
+    (name, acquired) => deferredResult(candidate, name, acquired, log));
+}
 
+/**
+ * Run `work` holding the lock of every realm a session from `cwd` may write
+ * to; when one is held, release what was taken and return
+ * `onDeferred(realmName, acquired)` instead. Shared with the Codex sweep.
+ */
+export function withRealmLocks({ cwd, vaultRoot, log = () => {}, owner = SWEEP_LOCK_OWNER }, work, onDeferred) {
   const taken = [];
   try {
-    for (const { root, name } of realmsFor(head.cwd, vaultRoot)) {
-      const acquired = acquireRealmLock(root, { owner: SWEEP_LOCK_OWNER, pid: process.pid, now: new Date() });
-      if (!acquired.ok) return deferredResult(candidate, name, acquired, log);
+    for (const { root, name } of realmsFor(cwd, vaultRoot)) {
+      const acquired = acquireRealmLock(root, { owner, pid: process.pid, now: new Date() });
+      if (!acquired.ok) return onDeferred(name, acquired);
       if (acquired.takenOver) {
         log(`realm ${name}: took over a stale lock from ${describeHolder(acquired.takenOver)} (${holderAgeMinutes(acquired.takenOver)} min old)`);
       }

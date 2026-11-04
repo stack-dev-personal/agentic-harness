@@ -1,7 +1,7 @@
 # Model-agnostic harness memory
 
-Status: approved by the user on 2026-11-03; implementation verified on Windows;
-installed-provider refresh awaits user approval.
+Status: implementation verified on Windows; user-approved Hermes provider update
+installed. Native Codex delegated recovery has a recorded capability gap.
 Branch: `feat/model-agnostic-memory`.
 
 ## Objective
@@ -198,14 +198,32 @@ Current verification evidence:
 - [x] The exact corrected provider action rerun through the verifier passed all
   16 tests at 82% coverage. Supplemental logs and `provider-result.json` are at
   `C:/Users/stack/work/hermes-provider-confirmation-20261103-204639-0127`.
-- [ ] Latest provider source still differs from the installed copy. Approval is
-  required before replacing the installed file. Live behavior after that update
-  remains a separate verification step.
+- [x] User approved the reviewed installed-provider update, and it was applied
+  from local implementation commit `e402d35`. Only
+  `plugins/harness-memory/__init__.py` changed. SHA256 checks confirm the installed
+  file matches source and the backup matches the previous installed provider.
+  Backup: `C:/Users/stack/AppData/Local/hermes/backups/harness-adapter-1793757429261-__init__.py`.
+  A second installer preview reports no changes.
+- [x] Native discovery from the actual installed Hermes profile returns
+  `harness-memory`, satisfies the native MemoryProvider interface, and reports
+  available. This check did not initialize a session or make model calls.
+- [x] Content-free worker diagnostics show five-minute runs continuing to capture
+  and ingest eligible notes after the update.
+- [ ] Live worker health is not fully clear: 15 eligible Codex delegated
+  sessions return `child task unavailable`. Metadata-only checks identify 15
+  paginated subagent sessions with parents. Their parent collaboration items
+  contain waits with null prompts; associated activity records expose linkage
+  metadata, and parent MCP items expose no spawn tool. No task or conversation
+  text was returned by these checks. Assignment recovery from these records is
+  an unresolved Codex capability gap. Inherited child context remains excluded.
+- [ ] Capture and recall from a fresh interactive Hermes session remain to be
+  exercised; the installed-profile check establishes discovery and availability.
 
-Next action: obtain user approval for the reviewed installed-provider update,
-which replaces only `plugins/harness-memory/__init__.py` after backing it up.
-The corrected `C:/Users/stack/work/Verify-HermesMemoryFinal-20261103.ps1` remains
-available for future synthetic verification. It does not install, capture live
-sessions, reconcile historical data, migrate a database, or commit. No historical
-reconciliation or provider replacement has been performed. Native Hermes history
-suppression remains unverified; restricted workflows remain prohibited.
+Next action: start a fresh Hermes session to load the updated provider and verify
+capture/recall. Keep the Codex delegated-assignment capability gap visible for a
+separate adapter investigation; do not infer missing assignments from inherited
+context. The corrected `C:/Users/stack/work/Verify-HermesMemoryFinal-20261103.ps1`
+remains available for future synthetic verification. It does not install, capture
+live sessions, reconcile historical data, migrate a database, or commit. No
+historical reconciliation has been performed. Native Hermes history suppression
+remains unverified; restricted workflows remain prohibited.

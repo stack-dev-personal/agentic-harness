@@ -18,9 +18,10 @@ import path from 'node:path';
 import { isSyncPath, livePathspecs, scanRealm, SYNC_PATHSPECS } from './realm-guard.mjs';
 import { isStaged, parsePorcelainZ, splitBySyncPath } from './realm-status.mjs';
 
-/** `git pull` and `git push` reach the network; the rest does not. */
+/** `git pull` and `git push` reach the network; the rest does not, but `git status` on a
+ * 1,900-note realm takes 24 s over a Docker Desktop bind mount, so the local budget is 90 s. */
 export const SYNC_FETCH_TIMEOUT_MS = 120_000;
-export const SYNC_GIT_TIMEOUT_MS = 30_000;
+export const SYNC_GIT_TIMEOUT_MS = 90_000;
 
 /** How many paths one note or error names before `…N more`. */
 const PATHS_SHOWN = 3;

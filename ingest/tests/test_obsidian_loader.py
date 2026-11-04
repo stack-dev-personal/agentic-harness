@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ingest.config import DEFAULT_AGENT, SOURCE_OBSIDIAN
+from ingest.config import SOURCE_OBSIDIAN
 from ingest.errors import SourceError
 from ingest.loaders.obsidian import load_vault, split_frontmatter
 
@@ -97,7 +97,7 @@ def test_ingest_metadata_is_namespaced_to_avoid_frontmatter_collisions(vault_pat
 def test_source_and_agent_are_set(vault_path: Path):
     for doc in load_vault(vault_path).documents:
         assert doc.source == SOURCE_OBSIDIAN
-        assert doc.agent == DEFAULT_AGENT
+        assert doc.agent == "unknown"
 
 
 def test_session_agent_comes_from_valid_frontmatter(tmp_path: Path):
@@ -109,7 +109,7 @@ def test_session_agent_comes_from_valid_frontmatter(tmp_path: Path):
     assert doc.metadata["agent"] == "codex"
 
     note.write_text("---\ntype: session\nagent: 'bad value'\nid: session-codex-example\n---\n\n# Chat\n", encoding="utf-8")
-    assert by_id(load_vault(tmp_path))["session-codex-example"].agent == DEFAULT_AGENT
+    assert by_id(load_vault(tmp_path))["session-codex-example"].agent == "unknown"
 
 
 def test_title_comes_from_frontmatter_then_h1(vault_path: Path):

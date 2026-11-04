@@ -122,7 +122,7 @@ WHERE source = %s AND external_id = %s
 # collection is invisible, because `filter_collection` just stops matching.
 _UPDATE_METADATA = f"""
 UPDATE {DOCUMENTS_TABLE}
-SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb, body = %s
 WHERE id = %s
 """
 
@@ -503,9 +503,10 @@ class PostgresStore:
     def update_document_metadata(
         self, document_id: int, document: SourceDocument
     ) -> None:
-        """Refresh everything but the body, leaving every chunk in place.
+        """Refresh raw display content and metadata, leaving every chunk in place.
 
-        The body — and therefore every embedding derived from it — is unchanged,
+        The canonical embedding view is unchanged, although the raw body may
+        contain updated provenance or lifecycle facts,
         so re-chunking and re-embedding would produce byte-identical vectors at
         the cost of a model pass per document.
         """
@@ -521,6 +522,7 @@ class PostgresStore:
                         document.collection,
                         document.agent,
                         dumps(document.metadata),
+                        document.body,
                         document_id,
                     ),
                 )

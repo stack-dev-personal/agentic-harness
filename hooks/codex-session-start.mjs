@@ -20,4 +20,4 @@ import { startHookProcess } from './session-start.mjs';
 
 export const CODEX_LOG_PATH = path.join(os.homedir(), '.codex', 'hooks', 'session-start.log');
 
-if (isEntryPoint(import.meta.url)) startHookProcess({ logPath: CODEX_LOG_PATH });
+if (isEntryPoint(import.meta.url)) startHookProcess({ logPath: CODEX_LOG_PATH, runtime: 'codex' });

@@ -35,6 +35,7 @@ import { DEFAULT_VAULT_SEGMENTS, DISABLE_VALUES, VAULT_ENV_VAR } from './lib/con
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { memoryPolicyFields, sessionMemoryEligibility } from './lib/memory-policy.mjs';
 import { defaultStateDir, writeSessionStartRecord } from './lib/session-start.mjs';
 import {
   BRIEF_DEADLINE_MS,
@@ -73,7 +74,8 @@ function parseInput(raw) {
   const keys = Object.keys(input);
   const cwd = toPosix(pick(input, 'cwd'));
   if (!cwd) return { ok: false, reason: 'no cwd', keys };
-  return { ok: true, keys, sessionId: pick(input, 'session_id', 'sessionId'), cwd };
+  return { ok: true, keys, sessionId: pick(input, 'session_id', 'sessionId'), cwd,
+    parentSession: pick(input, 'parentSession', 'parent_session_id'), ...memoryPolicyFields(input) };
 }
 
 /** The input's key names, sorted, for the log; a key that is not a plain name is counted, not printed. */
@@ -132,6 +134,7 @@ export async function run({
   log = () => {},
   now = Date.now,
   timeoutMs = BRIEF_DEADLINE_MS,
+  runtime = 'claude-code',
   stateDir = defaultStateDir(env, home),
   build = buildStartBrief,
   writeRecord = writeSessionStartRecord,
@@ -149,6 +152,8 @@ export async function run({
     const input = parseInput(String(raw ?? ''));
     log(describeKeys(input.keys));
     if (!input.ok) return empty(input.reason);
+    const policy = sessionMemoryEligibility({ input: { ...input, runtime }, env });
+    if (!policy.allowed) return empty('memory policy excludes session');
 
     const vaultRoot = env[VAULT_ENV_VAR] || path.join(home, ...DEFAULT_VAULT_SEGMENTS);
     const args = { cwd: input.cwd, vaultRoot, home, tmp, now, deadlineAt: startedAt + timeoutMs, ...(io ? { io } : {}) };
@@ -210,7 +215,7 @@ function defaultLogPath(env) {
   return env[LOG_ENV_VAR] || fallbackLogPath;
 }
 
-async function main() {
+async function main(runtime) {
   const startedAtMs = Date.now();
   const problems = [];
   let env = process.env;
@@ -224,7 +229,7 @@ async function main() {
 
   const raw = await readStdinText(process.stdin, STDIN_BUDGET_MS, log);
   const remaining = Math.max(0, startedAtMs + BRIEF_DEADLINE_MS - Date.now());
-  const { stdout } = await run({ raw, env, log, timeoutMs: remaining });
+  const { stdout } = await run({ raw, env, log, timeoutMs: remaining, runtime });
   return stdout;
 }
 
@@ -260,11 +265,11 @@ function onFatal(error) {
  * point (below) and Codex's (codex-session-start.mjs) both call this; they
  * differ only in where the log goes when HARNESS_SESSION_START_LOG is unset.
  */
-export function startHookProcess({ logPath = CLAUDE_LOG_PATH } = {}) {
+export function startHookProcess({ logPath = CLAUDE_LOG_PATH, runtime = 'claude-code' } = {}) {
   fallbackLogPath = logPath;
   process.on('uncaughtException', onFatal);
   process.on('unhandledRejection', onFatal);
-  main().then(answerAndExit, (error) => {
+  main(runtime).then(answerAndExit, (error) => {
     createLogger(defaultLogPath(process.env))(`fatal: ${describeError(error)}`);
     answerAndExit(EMPTY_OUTPUT);
   });

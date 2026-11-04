@@ -59,8 +59,11 @@ The expensive step is embedding. Everything before it is cheap file and JSON
 work; everything after it is a handful of inserts. So the pipeline decides as
 early as possible whether the expensive step is needed at all.
 
-`rag.documents.content_hash` is a SHA-256 of the normalised body, stored at write
-time and indexed. On every run:
+`rag.documents.content_hash` is a SHA-256 of the normalized embedding body,
+stored at write time and indexed. Recognized generated schema-v2 session notes
+use a canonical task/outcome/activity view shared by all runtimes, excluding
+machine-generated provenance. Other notes use their normalized raw body. The
+stored document still retains the raw body and provenance metadata. On every run:
 
 1. Look up the document by `(source, external_id)` — the unique constraint that
    makes this a single index probe. The probe also returns the stored `title`
@@ -73,22 +76,22 @@ time and indexed. On every run:
 
 ### Frontmatter-only changes
 
-The hash is over the **body**, and several things change a note's frontmatter
+The hash is over the **embedding body**, and several things change a note's frontmatter
 and nothing else: a resume flipping `status` to `superseded`, a `child_sessions`
 link added when a subagent stops after its parent, and `sweep-concluded --apply`
 writing `status` and `concluded_at`. All of them used to land behind the
 unchanged short-circuit, so `rag.documents.metadata` stayed as it was until the
 body happened to change — which for a concluded session is never.
 
-So when the body hash matches, every column the upsert writes apart from the
-body and its hash — `title`, `collection`, `agent`, `metadata` — is compared
+So when the embedding hash matches, `title`, `collection`, `agent`, `metadata`
+and the raw-body digest are compared
 with the freshly parsed value (`metadata` as canonical JSON with sorted keys,
 because `jsonb` does not preserve the loader's order). If any differ, the
 document takes the **metadata-only path**: one
 
 ```sql
 UPDATE rag.documents
-SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb, body = %s
 WHERE id = %s
 ```
 
@@ -534,12 +537,13 @@ A resume that arrives after the note concluded starts a new `<id>-r2.md` naming
 what it continues in `resumed_from` and `supersedes`, and flips the earlier note
 to `superseded`. Nothing is deleted and no id ever changes meaning.
 
-`content_hash` is computed over the **body**, so a change confined to
-frontmatter does not change the hash. The pipeline compares the stored `title`
+`content_hash` is computed over the **embedding body**, so a change confined to
+provenance or lifecycle facts does not change the hash. The pipeline compares the stored `title`
 and `metadata` against the parsed ones in that case and issues a metadata-only
 UPDATE — see [Frontmatter-only changes](#frontmatter-only-changes). The fields
-that matter for retrieval are *also* mirrored into the note's `## Session facts`
-table, so they are searchable as text as well as filterable as metadata.
+that matter for filtering remain in metadata and the raw `## Session facts`
+table; generated provenance is excluded from session embeddings. See the
+[shared memory contract](model-agnostic-memory.md).
 
 ### Tags
 

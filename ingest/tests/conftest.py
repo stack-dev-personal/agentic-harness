@@ -16,6 +16,14 @@ from ingest.models import Chunk, DocumentState, RetrievalEvent, SourceDocument
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def isolate_memory_policy_environment(tmp_path: Path, monkeypatch):
+    """Tests never consult real session exclusion markers or machine policy."""
+    monkeypatch.setenv("HARNESS_MEMORY_STATE_DIR", str(tmp_path / "memory-state"))
+    monkeypatch.delenv("HARNESS_MEMORY_EXCLUDED_ROOTS", raising=False)
+    monkeypatch.delenv("HARNESS_MEMORY_PERSISTENCE", raising=False)
+
+
 @pytest.fixture
 def vault_path() -> Path:
     return FIXTURES / "vault"
@@ -65,6 +73,7 @@ class FakeStore:
         self.documents: dict[tuple[str, str], DocumentState] = {}
         self.chunks: dict[int, list[Chunk]] = {}
         self.embeddings: dict[int, list[list[float]]] = {}
+        self.bodies: dict[tuple[str, str], str] = {}
         self.write_calls = 0
         self.metadata_writes = 0
         self.lookup_calls = 0
@@ -110,6 +119,7 @@ class FakeStore:
             document_id = existing.document_id
             inserted = False
         self.documents[key] = _state(document_id, content_hash, document)
+        self.bodies[key] = document.body
         self.written_at[key] = self.now
         self.chunks[document_id] = list(chunks)
         self.embeddings[document_id] = [list(e) for e in embeddings]
@@ -122,6 +132,7 @@ class FakeStore:
                 continue
             self.metadata_writes += 1
             self.documents[key] = _state(document_id, state.content_hash, document)
+            self.bodies[key] = document.body
             self.written_at[key] = self.now
             return
         raise StoreError(f"no document with id {document_id}")

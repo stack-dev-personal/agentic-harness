@@ -467,9 +467,9 @@ function claudeConfigRow(home, runGit, now) {
  * The report as rows; `main` prints them. Exported for the tests, which
  * script `runGit` so only one of them spawns git.
  */
-export function diagnose(env = process.env, home = os.homedir(), { runGit = runGitSync, now = Date.now } = {}) {
+export function diagnose(env = process.env, home = os.homedir(), { runGit = runGitSync, now = Date.now, repoDir = path.resolve(HERE, '..') } = {}) {
   const machineFile = env[MACHINE_ENV_VAR] || path.join(home, ...MACHINE_ENV_SEGMENTS);
-  const merged = loadMachineEnv(loadRepoEnv(env, path.resolve(HERE, '..')), home);
+  const merged = loadMachineEnv(loadRepoEnv(env, repoDir), home);
   const vaultRoot = merged[VAULT_ENV_VAR] || path.join(home, ...DEFAULT_VAULT_SEGMENTS);
   const projectDir = merged[ENV_PROJECT_DIR] || DEFAULT_PROJECT_DIR;
   const realms = realmsOnDisk(vaultRoot);

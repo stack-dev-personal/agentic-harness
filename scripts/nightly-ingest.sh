@@ -131,7 +131,14 @@ else
   run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" "${checkpoint_args[@]}"; checkpoint_code=$?
 fi
 run_step sweep "$UV_BIN" --directory "$PROJECT" run ingest sweep-concluded --path "$VAULT" --stale-after-hours "$STALE_AFTER_HOURS" --apply; sweep_code=$?
-run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest --source obsidian --path "$VAULT" --prune; ingest_code=$?
+ingest_args=(--source obsidian --path "$VAULT")
+# Orphan deletion is a separately approved operation, never an implicit nightly side effect.
+case "${HARNESS_INGEST_PRUNE:-0}" in
+  1|true) ingest_args+=(--prune) ;;
+  0|false) ;;
+  *) log "ingest: invalid HARNESS_INGEST_PRUNE; refusing"; exit 2 ;;
+esac
+run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest "${ingest_args[@]}"; ingest_code=$?
 
 # Step 3: audit the store the ingest just left (read-only; 0 clean, 1 findings,
 # 2 could not run). It runs after a failed ingest too, when it matters most.

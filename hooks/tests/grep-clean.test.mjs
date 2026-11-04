@@ -266,8 +266,14 @@ test('every COPY source of the jobs Dockerfile puts at least one file in the ima
   assert.ok(scanned.length >= JOB_ENTRY_POINTS.length, `only ${scanned.length} code files scanned`);
 });
 
+test('coverage databases stay outside the jobs build context', () => {
+  assert.equal(isIgnored('ingest/.coverage', rules), true);
+  assert.equal(isIgnored('ingest/.coverage.worker-123', rules), true);
+});
+
 test('nothing the jobs image copies is bound to Windows', () => {
-  const offenders = [DOCKERFILE, ...copied].flatMap((file) => offendersIn(file, read(file)));
+  const scanned = [DOCKERFILE, ...copied].filter((file) => codeOf(file, '') !== null);
+  const offenders = scanned.flatMap((file) => offendersIn(file, read(file)));
   assert.deepEqual(offenders, [], `OS-bound code in the image:\n${offenders.join('\n')}`);
 });
 

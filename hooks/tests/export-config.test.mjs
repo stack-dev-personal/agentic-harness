@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { canonicalFixturePath } from './helpers/fixture-path.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -466,7 +467,7 @@ function repoWithWorktree(root) {
   return { main, wt };
 }
 
-const samePath = (a, b) => fs.realpathSync.native(a).toLowerCase() === fs.realpathSync.native(b).toLowerCase();
+const samePath = (a, b) => canonicalFixturePath(a).toLowerCase() === canonicalFixturePath(b).toLowerCase();
 /** The checkout a pre-commit hook's text falls back to when HARNESS_REPO is unset. */
 const bakedRepo = (hookText) => /HARNESS_REPO:-([^}]*)\}/.exec(hookText)[1];
 

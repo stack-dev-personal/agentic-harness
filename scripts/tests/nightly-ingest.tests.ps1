@@ -177,6 +177,7 @@ try {
 
     # (3) a clean night: verify and eval run after the ingest and before the realm push.
     $r = Invoke-Nightly $fixture 'clean'
+    Test-Check 'pruning is disabled without explicit opt-in' (-not (($r.Log -join "`n") -match '(?m)^.*ingest : .* --prune'))
     $ingestAt = Get-LineIndex $r.Log 'ingest : exit '
     $verifyAt = Get-LineIndex $r.Log 'verify : uv run ingest verify'
     $evalAt = Get-LineIndex $r.Log 'eval : uv run ingest eval'
@@ -188,6 +189,8 @@ try {
     Test-Check 'the order is ingest, verify, eval, realms-push' ($ingestAt -ge 0 -and $ingestAt -lt $verifyAt -and $verifyAt -lt $evalAt -and $evalAt -lt $pushAt) "ingest $ingestAt, verify $verifyAt, eval $evalAt, push $pushAt"
     Test-Check 'the summary line reports verify and eval after ingest' (Test-LogHas $r.Log 'ingest 0, verify 0, eval 0, realms-push 0) ===')
     Test-Check 'a clean night logs no "ended with"' (-not (Test-LogHas $r.Log 'ended with'))
+    $r = Invoke-Nightly $fixture 'prune-opt-in' -ExtraArgs @('-Prune')
+    Test-Check 'pruning requires explicit opt-in' (Test-LogHas $r.Log '--prune')
 
     # (4) verify and eval failing are logged and change nothing about the exit code.
     $r = Invoke-Nightly $fixture 'steps-fail' -Environment @{ FAKE_VERIFY_CODE = '1'; FAKE_EVAL_CODE = '2' }

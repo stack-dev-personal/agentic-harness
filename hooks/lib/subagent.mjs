@@ -36,10 +36,13 @@ import {
   SUBAGENT_BUDGET_BYTES,
   SUBAGENTS_DIR,
   STATUS_CONCLUDED,
+  STATUS_ACTIVE,
+  RESUME_REASON,
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
 import { machineName } from './machine-env.mjs';
+import { entryPaths, sessionMemoryEligibility } from './memory-policy.mjs';
 import { mergeFields } from './merge.mjs';
 import {
   buildFields,
@@ -83,8 +86,12 @@ export function captureSubagent({
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
   log = () => {},
+  env = process.env,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
+  input = { ...input, runtime: 'claude-code' };
+  const policy = sessionMemoryEligibility({ input, env });
+  if (!policy.allowed) return { ...skip(policy.reason), action: 'excluded' };
 
   const agentId = normalizeAgentId(input.agentId);
   if (!agentId) return skip('no agent_id');
@@ -99,6 +106,8 @@ export function captureSubagent({
 
   const accumulator = createAccumulator();
   extractTools(entries, accumulator);
+  const touched = sessionMemoryEligibility({ input, env, paths: [...entryPaths(entries), ...accumulator.files.keys(), ...accumulator.filesRead.keys()] });
+  if (!touched.allowed) return { ...skip(touched.reason), action: 'excluded' };
 
   const meta = readAgentMeta(transcriptPath);
   const prompts = agentPrompts(entries, meta);
@@ -160,8 +169,8 @@ export function captureSubagent({
     endedAt: facts.timing.endedAt,
     durationMs: facts.timing.durationMs,
     // A stopped subagent is finished by definition: nothing resumes one.
-    status: STATUS_CONCLUDED,
-    concludedAt: facts.timing.endedAt,
+    status: input.endReason === RESUME_REASON ? STATUS_ACTIVE : STATUS_CONCLUDED,
+    concludedAt: input.endReason === RESUME_REASON ? '' : facts.timing.endedAt,
     repo: inherited.repo,
     branch: facts.branch,
     worktree: facts.repo.worktree,
@@ -173,8 +182,9 @@ export function captureSubagent({
     parentSession: input.sessionId,
     childSessions: [],
     agentType,
+    agent: 'claude-code', runtime: 'claude-code',
     origin: extractOrigin(entries),
-    machine: machineName(process.env),
+    machine: machineName(env),
     capturedBy,
     commits: facts.commits,
     prs: facts.prs,

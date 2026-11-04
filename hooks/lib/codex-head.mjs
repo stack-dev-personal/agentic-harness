@@ -1,5 +1,7 @@
 /** The first record of a Codex rollout transcript: its `session_meta`. */
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const CHUNK_BYTES = 64 * 1024;
 /** `session_meta` carries the base instructions, so its line can run long. */
@@ -48,4 +50,26 @@ function parseHead(line) {
 /** A subagent rollout: it inherits its parent's context, so it is never captured on its own. */
 export function isSubagentHead(record) {
   return Boolean(record?.payload?.parent_thread_id) || typeof record?.payload?.source === 'object';
+}
+
+/** SessionEnd may omit transcript_path, or still name a rollout that was archived. */
+export function resolveCodexTranscript({ declaredPath, sessionId, home = os.homedir(), deadlineAt = Date.now() + 500 }) {
+  if (declaredPath && fs.existsSync(declaredPath)) return declaredPath;
+  if (!sessionId) return '';
+  const pending = [path.join(home, '.codex', 'archived_sessions'), path.join(home, '.codex', 'sessions')];
+  while (pending.length && Date.now() < deadlineAt) {
+    const directory = pending.pop();
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (Date.now() >= deadlineAt) return '';
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(file);
+      else if (entry.isFile() && entry.name.endsWith(`-${sessionId}.jsonl`)) {
+        const { record } = readCodexHead(file);
+        if ((record?.payload?.id || record?.payload?.session_id) === sessionId) return file;
+      }
+    }
+  }
+  return '';
 }

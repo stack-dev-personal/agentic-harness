@@ -108,6 +108,8 @@ export function parseHookInput(raw, env = process.env) {
       agentType: pick(input, 'agent_type', 'agentType'),
       agentTranscriptPath: toPosix(pick(input, 'agent_transcript_path', 'agentTranscriptPath')),
       parentSession: isSafeFilenameSegment(parentSession) ? parentSession : '',
+      ...Object.fromEntries(['memory_excluded', 'purpose', 'classification', 'data_classification', 'restricted', 'persistence']
+        .filter(key => Object.hasOwn(input, key)).map(key => [key, input[key]])),
     },
   };
 }

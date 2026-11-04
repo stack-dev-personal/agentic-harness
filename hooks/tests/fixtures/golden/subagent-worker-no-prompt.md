@@ -55,6 +55,7 @@ retrieved: []
 hook_tags:
   - 'phase-7'
   - 'db'
+runtime: 'claude-code'
 ---
 
 # 2026-09-16 · bb2dash · feature-dev:code-reviewer · Review the migration

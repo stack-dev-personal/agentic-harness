@@ -238,7 +238,7 @@ test('a note written before retrievals existed merges cleanly and gains empty li
   const old = golden
     .replace(/\nhook_tags:(?: \[\])?\n(?: {2}- .*\n)*/, '\n')
     .split('\n')
-    .filter((line) => !/^(retrievals|retrieved):/.test(line))
+    .filter((line) => !/^(retrievals|retrieved|runtime|provider|model):/.test(line))
     .join('\n')
     .replace(/session-capture\.mjs \d+\.\d+\.\d+/, 'session-capture.mjs 2.2.0');
   const parsed = parseFrontmatter(old);

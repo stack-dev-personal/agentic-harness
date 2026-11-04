@@ -47,6 +47,17 @@ def test_source_choices_are_the_two_loaders():
     assert set(action.choices) == {"obsidian", "claude-mem"}
 
 
+@pytest.mark.parametrize("disabled", ["off", "false", "0", "no", "exclude"])
+def test_disabled_memory_blocks_ingestion_before_env_or_data_access(monkeypatch, capsys, disabled):
+    monkeypatch.setenv("HARNESS_MEMORY_PERSISTENCE", disabled)
+    def unexpected(*args, **kwargs):
+        raise AssertionError("disabled ingestion accessed configuration or data")
+    monkeypatch.setattr("ingest.cli.load_env_file", unexpected)
+    monkeypatch.setattr("ingest.cli._run", unexpected)
+    assert main(["--source", "obsidian", "--path", "unused"]) == 1
+    assert "memory persistence disabled" in capsys.readouterr().err
+
+
 def test_missing_arguments_exit_with_usage_error(clean_env, capsys):
     assert main(["--env-file", str(clean_env)]) == 2
     assert "required" in capsys.readouterr().err

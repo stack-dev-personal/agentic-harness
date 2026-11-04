@@ -65,6 +65,8 @@ class SourceDocument:
     # Parsed from the note's ``retrievals:`` frontmatter, which is kept out of
     # ``metadata``; projected into ``rag.retrieval_events`` after the document.
     retrievals: tuple[RetrievalEvent, ...] = ()
+    # Optional canonical content. Raw `body` remains available to get_document.
+    embedding_body: str | None = None
 
     def __post_init__(self) -> None:
         # Validate at the boundary: a loader bug must not reach the database.
@@ -78,6 +80,10 @@ class SourceDocument:
             raise DocumentError(self.external_id, "metadata must be a dict")
         if not isinstance(self.retrievals, tuple):
             raise DocumentError(self.external_id, "retrievals must be a tuple")
+        if self.embedding_body is not None and (
+            not isinstance(self.embedding_body, str) or not self.embedding_body.strip()
+        ):
+            raise DocumentError(self.external_id, "embedding_body must be nonempty text")
 
     def with_metadata(self, **extra: Any) -> "SourceDocument":
         return replace(self, metadata={**self.metadata, **extra})

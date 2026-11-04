@@ -1,7 +1,13 @@
 # `hooks/` — session capture
 
-One Claude Code or Codex session becomes one markdown note in the Obsidian
+One Claude Code, Codex or Hermes session becomes one markdown note in the Obsidian
 vault, so the RAG store can answer questions about work that already happened.
+
+The [shared memory contract](../docs/model-agnostic-memory.md) defines capture,
+eligibility, durable retries, five-minute checkpoints and restricted-session
+exclusion uniformly. `memory-worker.mjs` owns scheduling/recovery for all native
+adapters. Runtime and model provenance do not change ranking or embedding inputs.
+The [Hermes provider](../hermes/README.md) uses this same pipeline and MCP server.
 
 The source of truth is this directory. `~/.claude/hooks/` holds a byte-identical
 deployed copy, installed by `node hooks/install.mjs`. Edit here, install, never
@@ -41,14 +47,15 @@ JSON), and leaves the record that capture turns into a `session-start`
 retrieval. Its log is `~/.codex/hooks/session-start.log`.
 
 Trust both hooks through `/hooks` in the CLI or Settings > Hooks in desktop. On
-Windows, run `scripts/register-codex-ingest.ps1` once. Codex ends detached
-children when a hook exits, so the capture appends note paths to
-`~/.harness/codex-ingest-queue.jsonl` and starts the scheduled ingest task.
-The task also sweeps main Codex transcripts idle for at least six hours, then
-retries pending notes daily at 03:15. Codex subagent rollouts are excluded from
-that sweep because their user-role blocks contain inherited parent context.
+Windows, run `scripts/register-memory-worker.ps1 -Apply`. All runtime hooks append
+note paths to `~/.harness/memory-ingest-queue.jsonl` and start the same task.
+The task runs every five minutes, saves new or changed native sessions as active
+notes even while chats remain open, and indexes the changed notes. Unchanged
+native revisions are skipped. SessionEnd concludes the note. Child adapters
+retain their own assignment/results and exclude inherited parent prompts.
+The old Codex script/queue names remain compatibility entry points.
 Logs are in
-`~/.codex/hooks/session-capture.log` and `ingest-queue.log`.
+`~/.codex/hooks/session-capture.log` and `~/.harness/memory-worker.log`.
 
 ```
 hooks/

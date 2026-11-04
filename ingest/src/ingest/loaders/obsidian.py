@@ -11,7 +11,7 @@ emits one :class:`SourceDocument` per note.
   Prefer an ``id:`` in notes you expect to move. With a path-based key a rename
   is indistinguishable from delete-plus-create: the old row is stranded and a
   duplicate appears. A stable ``id:`` survives the rename.
-* ``agent``       = a session note's validated ``agent:`` field, else ``claude-code``
+* ``agent``       = validated explicit agent/runtime provenance, else ``unknown``
 * ``metadata``    = the frontmatter verbatim, plus an ``_ingest`` sub-object.
   Ingest-added keys are nested under ``_ingest`` so they can never collide with
   a user's own frontmatter key named ``path`` or ``source``. The one key left
@@ -33,11 +33,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..config import DEFAULT_AGENT, ENV_REALMS, REALM_NAME, SDK_ORIGIN_PREFIX, SOURCE_OBSIDIAN
+from ..config import ENV_REALMS, REALM_NAME, SOURCE_OBSIDIAN
 from ..errors import SourceError
 from ..jsonutil import json_safe
+from ..hashing import content_hash
 from ..models import RetrievalEvent, SourceDocument
 from ..retrievals import parse_retrievals, session_fields_from
+from ..session_content import embedding_body
+from ..memory_policy import memory_exclusion_reason
 from .base import LoadedSource, SkippedRecord
 
 log = logging.getLogger(__name__)
@@ -68,10 +71,6 @@ RETRIEVALS_KEY = "retrievals"
 # Frontmatter key that opts a note out of embedding. Absent means ingest.
 INGEST_KEY = "ingest"
 OPT_OUT_REASON = "frontmatter ingest: false"
-
-# Session notes the Agent SDK started stay in the vault and out of the index.
-SESSION_TYPE = "session"
-SDK_SESSION_REASON = "session started by the Agent SDK (origin: sdk-*)"
 
 # A realm is one git repo of notes, marked by a committed `.realm` file holding
 # its name. Either the vault root is one realm, or each top-level folder with a
@@ -417,12 +416,13 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
         raise SourceError(f"unreadable ({exc})") from exc
 
     frontmatter, body = split_frontmatter(raw, relative)
+    policy_reason = memory_exclusion_reason(frontmatter, note_path=path)
+    if policy_reason:
+        return SkippedRecord(relative, policy_reason)
     if not _wants_ingest(frontmatter):
         return SkippedRecord(relative, OPT_OUT_REASON)
     if not body.strip():
         return SkippedRecord(relative, "empty body")
-    if _is_sdk_session(frontmatter):
-        return SkippedRecord(relative, SDK_SESSION_REASON)
 
     external_id = _derive_external_id(frontmatter, relative)
     collection = _derive_collection(frontmatter, relative)
@@ -442,6 +442,10 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
     }
     if realm is not None:
         ingest_meta["realm"] = realm
+    canonical_body = embedding_body(body, frontmatter)
+    if canonical_body is not None:
+        ingest_meta["embedding_view"] = "session-v1"
+        ingest_meta["raw_body_hash"] = content_hash(body)
 
     # `retrievals` becomes rag.retrieval_events rows and stays out of metadata,
     # which rag.search returns with every hit. `retrieved` stays: it is links.
@@ -456,6 +460,7 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
         collection=collection,
         metadata=metadata,
         retrievals=retrievals,
+        embedding_body=canonical_body,
     )
 
 
@@ -477,18 +482,6 @@ def _parse_retrievals(
     for warning in warnings:
         log.warning("%s: %s", relative, warning)
     return tuple(events)
-
-
-def _is_sdk_session(frontmatter: dict) -> bool:
-    """A session note whose ``origin`` says the Agent SDK started it.
-
-    The hook copies ``origin`` from the transcript and never infers it, so an
-    absent or empty value means "unknown" and the note is kept.
-    """
-    if frontmatter.get("type") != SESSION_TYPE:
-        return False
-    origin = frontmatter.get("origin")
-    return isinstance(origin, str) and origin.startswith(SDK_ORIGIN_PREFIX)
 
 
 def _wants_ingest(frontmatter: dict) -> bool:
@@ -516,12 +509,12 @@ def _wants_ingest(frontmatter: dict) -> bool:
 
 
 def _derive_agent(frontmatter: dict) -> str:
-    """Keep the producer of captured sessions without changing ordinary notes."""
-    if frontmatter.get("type") == "session":
-        candidate = frontmatter.get("agent")
+    """Keep known provenance without inventing a runtime for unknown authors."""
+    for key in ("agent", "runtime"):
+        candidate = frontmatter.get(key)
         if isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", candidate):
             return candidate
-    return DEFAULT_AGENT
+    return "unknown"
 
 
 def _derive_collection(frontmatter: dict, relative: str) -> str | None:

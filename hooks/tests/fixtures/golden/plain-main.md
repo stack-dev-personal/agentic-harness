@@ -72,6 +72,7 @@ hook_tags:
   - 'gui'
   - 'phase-brief'
   - 'pr'
+runtime: 'claude-code'
 ---
 
 # 2026-09-11 · bb2dash · Start phase 7 retrieval polish. Add

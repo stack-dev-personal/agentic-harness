@@ -70,6 +70,7 @@ hook_tags:
   - 'db'
   - 'phase-brief'
   - 'validation'
+runtime: 'claude-code'
 ---
 
 # 2026-09-16 · bb2dash · Spawn two workers: one to finish

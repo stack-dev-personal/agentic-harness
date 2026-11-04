@@ -207,7 +207,7 @@ def _compare_scope(
         row = stored.get(external_id)
         if row is None:
             findings.append(Finding(external_id, f"{where}: ingestable note{_path_of(doc)} has no row"))
-        elif row.content_hash != content_hash(doc.body):
+        elif row.content_hash != content_hash(doc.embedding_body if doc.embedding_body is not None else doc.body):
             findings.append(Finding(external_id, f"{where}: stored content_hash differs from the note{_path_of(doc)}"))
     for external_id in sorted(stored.keys() - by_id.keys()):
         findings.append(Finding(external_id, f"{where}: {_orphan_detail(stored[external_id], skipped)}"))

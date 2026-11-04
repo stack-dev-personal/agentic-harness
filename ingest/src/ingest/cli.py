@@ -54,6 +54,7 @@ from .prune import PruneResult, prune_orphans
 from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
+from .session_content import require_memory_enabled
 from .sweep_cli import SUBCOMMAND as SWEEP_SUBCOMMAND, run_sweep
 from .tokenizer import HeuristicTokenCounter, model_token_counter, tokenizer_from_embedder
 from .verify_cli import SUBCOMMAND as VERIFY_SUBCOMMAND, run_verify
@@ -157,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        require_memory_enabled()
+    except IngestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] in SUBCOMMANDS:
         return SUBCOMMANDS[arguments[0]](arguments[1:])
@@ -170,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         load_env_file(Path(args.env_file) if args.env_file else None)
+        require_memory_enabled()
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

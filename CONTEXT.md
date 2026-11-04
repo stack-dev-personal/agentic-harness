@@ -29,7 +29,28 @@ or duplicating capability that is now native.
 | Retrieval | Hybrid vector + full-text, fused with RRF | Scale-free; no score normalisation needed |
 | Harness | Native-first (plan mode, Agent, Workflow, `/code-review`) | The old stack was mostly dead weight |
 | Memory | claude-mem retired, history migrated | Chroma leaked orphan processes; SQLite was the real store |
-| Hermes Agent | Shares this same store, added later (Phase 7) | Schema is agent-neutral from day one |
+| Runtime memory | Claude Code, Codex and Hermes share capture policy, durable queue/checkpoints, chunker, embedding model and `rag.search()` | User-approved model-agnostic memory plan, 2026-11-03; runtime/model are provenance |
+
+### Model-agnostic memory (2026-11-03)
+
+The approved implementation contract is [docs/model-agnostic-memory.md](docs/model-agnostic-memory.md).
+All captured sessions route through vault notes and the Obsidian loader; the
+older separate `source='hermes'` plan is superseded. Preserve historical IDs and
+source keys. Generated session embeddings exclude machine-generated provenance;
+raw notes and metadata retain it. Unknown attribution remains unknown. Explicit
+session purposes and restrictions replace SDK-origin eligibility rules.
+
+The common `AgenticHarness-Memory` worker checkpoints recent/new native activity
+every five minutes, drains durable path-only queues, and records health outside
+the vault. Historical bulk reconciliation requires a reviewed preview and user
+approval. No database schema migration is required.
+
+Restricted-data controls must apply before persistence. Sticky content-free
+session exclusions, parent inheritance and protected-root checks guard harness
+exports and recall. They do not suppress native raw history or remote model
+traffic. Native Hermes history suppression has not been established; restricted
+workflows through Hermes remain prohibited. Never claim secret redaction proves
+content is unrestricted.
 
 ## Database
 
@@ -471,7 +492,7 @@ Repo lives at `~/agentic-harness` (`C:/Users/stack/agentic-harness` on stack-lap
 | 4 Vault + ingestion | done — vault live and registered in Obsidian (2026-09-10), Fall 2026 class folders + index notes, bb2dash materials exported with `ingest: false`, SessionEnd capture verified |
 | 5 Retrieval MCP server | done — registered with Claude Code as `rag` (user scope, `~/.claude.json`) |
 | 6 Dev cycle | mostly done — user-level `~/.claude/CLAUDE.md` rewritten with required gates |
-| 7 Hermes Agent | deferred until 0–6 land |
+| 7 Hermes Agent | Shared-memory provider installed 2026-11-03; native contract and activation verified; new sessions load it. Restricted workflows remain prohibited until native persistence suppression is verified |
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
 | Memory sprint | proposed 2026-09-24 — `docs/memory-sprint-requirements.md`: phases N (hub names), H (`harness` realm, SessionStart brief, portable `~/.claude`), P (retrieval provenance), Q (store audit, location matrix), C (read-only curator); Hermes stays optional, the curator is tool-neutral |

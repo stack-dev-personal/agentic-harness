@@ -185,7 +185,8 @@ def test_metadata_update_rewrites_the_collection_a_moved_note_landed_in():
     assert params[1] == "bb2dash"
     assert params[2] == "claude-code"
     assert json.loads(params[3]) == {"status": "superseded"}
-    assert params[4] == 12
+    assert params[4] == MOVED.body
+    assert params[5] == 12
 
 
 def test_a_metadata_update_that_matched_no_row_is_an_error_not_a_success():

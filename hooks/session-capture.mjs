@@ -46,7 +46,7 @@ import {
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
+import { queueIngest } from './lib/ingest-queue.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
 
@@ -127,7 +127,7 @@ function main(logPath, machineEnvProblems) {
   // ----------------------------------------------------------------------
 
   if (Date.now() < DEADLINE_AT) {
-    enqueueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
+    queueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
   } else {
     log('ingest-enqueue skipped: over budget');
   }

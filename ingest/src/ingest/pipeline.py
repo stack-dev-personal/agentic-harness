@@ -5,12 +5,15 @@ hash -> skip-if-unchanged -> chunk -> embed -> transactional upsert
 Change detection happens before chunking and embedding, so a re-run over an
 unchanged corpus does no model work and issues no writes at all.
 
-The hash is over the **body**. Frontmatter therefore needs its own comparison:
+The hash is over embedding content: a canonical view for generated sessions,
+otherwise the original body. Frontmatter therefore needs its own comparison:
 a resume flipping ``status`` to ``superseded``, a ``child_sessions`` link, or
 ``sweep-concluded --apply`` writing ``status`` and ``concluded_at`` changes
 metadata and nothing else, and would otherwise sit behind the unchanged
 short-circuit forever. Such a document takes the metadata-only path — one
-UPDATE, no re-chunking and no embedding — and is counted separately.
+UPDATE, no re-chunking and no embedding — and is counted separately. Generated
+session notes also carry a raw-body hash so provenance-only edits refresh the
+stored raw body without changing vectors.
 
 Widening the hash to cover frontmatter would be the other way to catch it, and
 would re-embed every document in the store the first time it ran.
@@ -34,7 +37,9 @@ from .errors import IngestError
 from .hashing import content_hash as compute_hash
 from .jsonutil import canonical
 from .models import DocumentState, SourceDocument
+from .memory_policy import memory_exclusion_reason
 from .store import ChunkStore
+from .session_content import require_memory_enabled
 
 log = logging.getLogger(__name__)
 
@@ -211,6 +216,7 @@ class IngestPipeline:
         self.force = force
 
     def run(self, documents: Iterable[SourceDocument]) -> IngestStats:
+        require_memory_enabled()
         stats = IngestStats()
         for document in documents:
             try:
@@ -234,14 +240,20 @@ class IngestPipeline:
     # -- per document ------------------------------------------------------
 
     def _process(self, document: SourceDocument) -> DocumentOutcome:
-        digest = compute_hash(document.body)
+        policy_reason = memory_exclusion_reason({"agent": document.agent, **document.metadata})
+        if policy_reason:
+            raise IngestError(policy_reason)
+        embedding_body = document.embedding_body if document.embedding_body is not None else document.body
+        digest = compute_hash(embedding_body)
         state = self.store.get_document_state(document.source, document.external_id)
         is_new = state is None
 
         if state is not None and state.content_hash == digest and not self.force:
             return self._reconcile_metadata(document, state)
 
-        chunks = self.chunker.chunk(document.body, title=document.title)
+        # Canonical sessions carry a neutral heading. A display title can hold
+        # runtime identifiers and must not become an embedding prefix.
+        chunks = self.chunker.chunk(embedding_body, title=None if document.embedding_body is not None else document.title)
         if not chunks:
             raise IngestError(
                 f"{document.external_id}: chunker produced nothing from a "

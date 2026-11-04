@@ -114,7 +114,9 @@ param(
     [ValidateSet('Apply', 'Skip')]
     [string] $Verify = 'Apply',
     [ValidateSet('Apply', 'Skip')]
-    [string] $Eval = 'Apply'
+    [string] $Eval = 'Apply',
+    # Deleting orphan rows requires an explicit operator opt-in.
+    [switch] $Prune
 )
 
 $ErrorActionPreference = 'Stop'
@@ -392,7 +394,8 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 # --prune drops rows whose note left the vault or stopped qualifying for the
 # index (an SDK worker session, a note newly marked ingest: false). It refuses on
 # its own after any failed document or an empty load, so a bad night deletes nothing.
-$ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
+$ingestArgs = @('--source', 'obsidian', '--path', $VaultPath) + $envArgs
+if ($Prune) { $ingestArgs += '--prune' }
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
 # Step 3: audit the store the ingest just left. It runs after a failed ingest

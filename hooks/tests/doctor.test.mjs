@@ -545,11 +545,11 @@ test('DATABASE_URL row: set when DATABASE_URL_FILE names a readable file, ABSENT
     const { env } = vaultWith(root);
     const file = path.join(root, 'harness_database_url');
     fs.writeFileSync(file, 'postgresql://u:hunter2@h/db\n');
-    const urlRow = (extra) => diagnose({ ...env, ...extra }, root).find(([label]) => label === 'DATABASE_URL');
+    const urlRow = (extra) => diagnose({ ...env, ...extra }, root, { repoDir: root }).find(([label]) => label === 'DATABASE_URL');
 
     // What `docker compose exec harness-jobs node hooks/doctor.mjs` sees: the file's name, not its content.
     assert.deepEqual(urlRow({ DATABASE_URL_FILE: file }), ['DATABASE_URL', 'set (read from DATABASE_URL_FILE)', false]);
-    assert.ok(!JSON.stringify(diagnose({ ...env, DATABASE_URL_FILE: file }, root)).includes('hunter2'));
+    assert.ok(!JSON.stringify(diagnose({ ...env, DATABASE_URL_FILE: file }, root, { repoDir: root })).includes('hunter2'));
 
     const absent = path.join(root, 'absent');
     assert.deepEqual(urlRow({ DATABASE_URL_FILE: absent }), [

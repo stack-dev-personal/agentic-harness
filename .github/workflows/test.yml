@@ -29,6 +29,7 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      - run: node --test ../hermes/tests/bridge.test.mjs
 
   ingest:
     strategy:
@@ -44,6 +45,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen
       - run: uv run pytest
+      - run: uv run python -m unittest discover -s ../hermes/tests -p test_provider.py
 
   mcp-server:
     strategy:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from ingest.loaders.obsidian import SDK_SESSION_REASON, load_vault, load_vault_notes
+from ingest.loaders.obsidian import load_vault, load_vault_notes
 
 
 def by_id(loaded):
@@ -87,7 +87,7 @@ def test_nested_templates_folder_is_ordinary_content(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------
-# SDK worker sessions — kept in the vault, kept out of the index
+# SDK origin is provenance; eligibility is an explicit runtime-neutral policy
 # --------------------------------------------------------------------------
 
 
@@ -97,14 +97,11 @@ def session_note(origin: str | None, note_type: str = "session") -> str:
 
 
 @pytest.mark.parametrize("origin", ["sdk-py", "sdk-cli", "sdk-ts"])
-def test_a_session_started_by_the_sdk_is_skipped(tmp_path: Path, origin: str):
-    # /code-review and /security-review workers: one prompt holding a diff, often
-    # several identical copies. The sweep files them so the vault is complete;
-    # indexing them buries the sessions a person actually drove.
+def test_a_meaningful_session_started_by_the_sdk_is_loaded(tmp_path: Path, origin: str):
     (tmp_path / "worker.md").write_text(session_note(origin), encoding="utf-8")
     loaded = load_vault(tmp_path)
-    assert not loaded.documents
-    assert skipped_ids(loaded)["worker.md"] == SDK_SESSION_REASON
+    assert set(by_id(loaded)) == {"session-abc"}
+    assert not loaded.skipped
 
 
 @pytest.mark.parametrize("origin", ["cli", "claude-desktop", "cloud", "", None])
@@ -119,8 +116,8 @@ def test_origin_only_excludes_session_notes(tmp_path: Path):
     assert set(by_id(load_vault(tmp_path))) == {"session-abc"}
 
 
-def test_only_on_an_sdk_session_is_a_skip_not_an_error(tmp_path: Path):
+def test_only_on_an_sdk_session_has_the_same_policy_as_a_full_walk(tmp_path: Path):
     (tmp_path / "worker.md").write_text(session_note("sdk-py"), encoding="utf-8")
     loaded = load_vault_notes(tmp_path, ["worker.md"])
-    assert not loaded.documents
-    assert skipped_ids(loaded)["worker.md"] == SDK_SESSION_REASON
+    assert set(by_id(loaded)) == {"session-abc"}
+    assert not loaded.skipped

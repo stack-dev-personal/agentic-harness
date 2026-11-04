@@ -111,6 +111,8 @@ VECTOR_TYPE = "extensions.vector"
 
 SOURCE_OBSIDIAN = "obsidian"
 SOURCE_CLAUDE_MEM = "claude-mem"
+# Attribution of the retired claude-mem corpus only. Unknown vault authorship
+# is handled separately and must never inherit this historical provenance.
 DEFAULT_AGENT = "claude-code"
 
 # --------------------------------------------------------------------------
@@ -124,9 +126,8 @@ DEFAULT_AGENT = "claude-code"
 # summaries are model-written prose and are not subject to it.
 MIN_PROMPT_CHARS = 80
 
-# Session notes whose frontmatter `origin` starts with this were started by the
-# Agent SDK, not by a person: /code-review and /security-review workers, workflow
-# agents. Their single prompt is a pasted diff, frequently in identical copies.
+# Historical origin grouping for inventory counts only. SDK provenance is not
+# an eligibility rule; all runtimes use explicit memory policy metadata.
 SDK_ORIGIN_PREFIX = "sdk"
 
 # --------------------------------------------------------------------------

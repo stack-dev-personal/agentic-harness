@@ -36,11 +36,11 @@ run picks it up.
 ```mermaid
 flowchart LR
     subgraph capture["Capture"]
-        hook["SessionEnd hook<br/>session-capture.mjs"]
+        hook["Shared capture + checkpoints<br/>native runtime adapters"]
     end
 
     subgraph sources["Sources"]
-        vault["Obsidian vault<br/>OneDrive, markdown<br/>folder = collection"]
+        vault["Obsidian vault<br/>local git realms<br/>folder = collection"]
         cmem["claude-mem export<br/>443 observations<br/>137 summaries, 725 prompts"]
     end
 
@@ -51,7 +51,8 @@ flowchart LR
 
     subgraph agents["Agents"]
         cc["Claude Code"]
-        hermes["Hermes Agent<br/>Phase 7, not built"]
+        codex["Codex"]
+        hermes["Hermes Agent"]
     end
 
     mcp["mcp-server/<br/>Node stdio MCP server<br/>embeds the query with the same model"]
@@ -69,7 +70,8 @@ flowchart LR
     cmem --> ing
     ing <--> emb
     cc --> mcp
-    hermes -.-> mcp
+    codex --> mcp
+    hermes --> mcp
 
     ing ==>|"DATABASE_URL<br/>direct Postgres, service role"| docs
     ing ==>|"DATABASE_URL"| chunks
@@ -77,11 +79,9 @@ flowchart LR
     fn --> chunks
     fn --> docs
 
-    classDef unbuilt stroke-dasharray: 5 5
-    class hermes unbuilt
 ```
 
-Dashed boxes are designed but not yet built. Everything else is running.
+The native adapters share one capture and retrieval contract.
 
 Three structural properties matter in that picture.
 
@@ -288,14 +288,17 @@ The practical consequence for anyone writing code here: **do not build a
 `source` and `agent` are plain `text`, not enums, and nothing in the schema
 mentions Claude Code.
 
-The Hermes Agent (Phase 7) is meant to read and write this same store. Had
+Claude Code, Codex and Hermes read and write this same store. Had
 `source` been an enum, adding it would require an `ALTER TYPE` migration; had
 retrieval been shaped around one client's assumptions, a second client would need
 its own path and the two would drift.
 
-Instead a new producer is a new string. Ingest `source='hermes'` and it is
-searchable immediately, filterable via `filter_source`, and visible to every
-existing consumer with no schema change and no code change in the MCP server.
+Captured sessions from every runtime now use the same vault notes and
+`source='obsidian'` loader. Runtime, provider and model remain provenance;
+native format adapters feed shared capture, queueing, checkpointing, chunking
+and embedding policy. The older proposal for a separate Hermes session
+producer is superseded by this shared route. Historical source keys remain
+valid. See [the shared memory contract](model-agnostic-memory.md).
 
 The trade-off is that the database will not stop a typo — `source='obsidan'`
 inserts happily. That validation belongs at the ingestion boundary, which is the
@@ -367,5 +370,5 @@ On secrets:
 | Retrieval MCP server | `mcp-server/` | Live — registered with Claude Code as `rag`; 117 tests |
 | Obsidian vault | `OneDrive - Syracuse University/vault/` | Live — `projects/`, `classes/`, `daily/` |
 | Session capture hook | `~/.claude/hooks/session-capture.mjs` | Live — observed firing unprompted on 2026-09-09, note ingested |
-| Hermes Agent | — | Deferred to Phase 7 |
+| Hermes Agent | `hermes/` | Shared-memory provider, native integration verified without model calls |
 | Self-evolution loop | — | Deferred to Phase 8 |

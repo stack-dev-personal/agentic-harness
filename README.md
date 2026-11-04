@@ -1,6 +1,6 @@
 # agentic-harness
 
-An agentic engineering harness rebuilt on native Claude Code primitives, plus a
+An agentic engineering harness for Claude Code, Codex and Hermes, plus a
 Postgres + pgvector retrieval store that unifies an Obsidian vault with six
 months of migrated agent-memory history — searchable by meaning and by keyword,
 filtered by the project or class it came from.
@@ -16,7 +16,7 @@ Two problems, one repo:
    held file locks. The data was worth keeping; the machinery was not. It was
    exported and re-homed in Postgres.
 
-The result: every Claude Code session ends by writing itself into the vault, the
+The result: eligible sessions from all three runtimes write into the vault, the
 vault is embedded into Postgres, and any agent can query the whole history
 through one MCP server and one SQL function.
 
@@ -26,7 +26,7 @@ through one MCP server and one SQL function.
 
 ```mermaid
 flowchart LR
-    hook["SessionEnd hook"] --> vault
+    hook["Shared capture + checkpoints"] --> vault
     vault["Obsidian vault<br/>git realms, folder = collection"] --> ing
     cmem["claude-mem export<br/>1,305 documents"] --> ing
 
@@ -34,17 +34,16 @@ flowchart LR
     ing <--> emb["fastembed<br/>bge-small-en-v1.5<br/>local, 384 dims"]
 
     cc["Claude Code"] --> mcp["mcp-server/<br/>Node stdio MCP<br/>registered as rag"]
-    hermes["Hermes Agent<br/>Phase 7"] -.-> mcp
+    codex["Codex"] --> mcp
+    hermes["Hermes Agent"] --> mcp
     mcp --> search["rag.search()<br/>vector + full-text, RRF<br/>0.70 cosine floor"]
 
     ing ==>|"DATABASE_URL"| db
     search --> db[("harness-memory<br/>Supabase Postgres 17<br/>pgvector 0.8.2, schema rag")]
 
-    classDef unbuilt stroke-dasharray: 5 5
-    class hermes unbuilt
 ```
 
-Dashed = designed, not built. Everything else is live.
+All clients use the same retrieval service and memory contract.
 
 - **Storage** — its own Supabase project, `harness-memory`. Two tables:
   `rag.documents` (one row per source artifact, tagged with a `collection`) and
@@ -296,14 +295,19 @@ Restart Codex desktop after changing the MCP config. `codex mcp list` confirms
 the CLI registration; ask Codex to call `rag.search_context` for an end-to-end
 check. The `.env` stays in the harness checkout, not in the TOML file.
 
-For the start brief and chat capture, register `hooks/codex-session-start.mjs`
+All clients share the [model-agnostic memory pipeline](docs/model-agnostic-memory.md).
+Claude Code, Codex and Hermes use one capture policy, durable queue, checkpoint
+worker, chunker, embedding model and retrieval service. Runtime/model identity
+is provenance. See [Hermes installation](hermes/README.md) for profile setup.
+
+For the Codex start brief and chat capture, register `hooks/codex-session-start.mjs`
 as a `SessionStart` command (matcher `startup|resume`) and
 `hooks/codex-session-capture.mjs` as a `SessionEnd` command in
 `~/.codex/hooks.json`, then trust both in Codex's Hooks review. On
-Windows, run `scripts/register-codex-ingest.ps1` once: the hook queues each new
-vault note and starts a scheduled task to index it outside Codex's short hook
-lifetime. The task also captures missed main chats after six hours idle and
-retries pending notes daily at 03:15. See
+Windows, run `scripts/register-memory-worker.ps1 -Apply`: all hooks queue new
+vault notes and start the same hidden task. Every five minutes it saves and
+indexes new or changed sessions across runtimes, including chats left open.
+The registration replaces the old Codex-only schedule with the common worker. See
 [hooks/README.md](./hooks/README.md) for the exact JSON and logs.
 
 ---

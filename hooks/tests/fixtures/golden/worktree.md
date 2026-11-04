@@ -61,6 +61,7 @@ hook_tags:
   - 'gui'
   - 'db'
   - 'validation'
+runtime: 'claude-code'
 ---
 
 # 2026-09-12 · bb2dash · In the sync-loop worktree: finish the

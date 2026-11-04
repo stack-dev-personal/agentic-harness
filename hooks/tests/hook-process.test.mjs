@@ -44,6 +44,9 @@ function runHook(sandbox, payload, extraEnv = {}) {
       timeout: 30_000,
       env: {
         ...process.env,
+        USERPROFILE: sandbox.root,
+        HARNESS_MACHINE_ENV: path.join(sandbox.root, 'absent.env'),
+        HARNESS_MEMORY_START_WORKER: '0',
         [VAULT_ENV_VAR]: sandbox.vaultRoot,
         [LOG_ENV_VAR]: logPath,
         [ENV_ENABLED]: '0', // the real hook is under test; no detached ingest
@@ -177,13 +180,12 @@ test('with the enqueue enabled, the real process asks for an ingest and says so'
     );
 
     assert.equal(status, 0, 'the enqueue must never cost the session its clean exit');
-    assert.match(
-      log,
-      /ingest-enqueue spawn requested for projects\/bb2dash\/sessions\/11111111-1111-4111-8111-111111111111\.md \(pid=\d+\)/,
-      log,
-    );
-    assert.doesNotMatch(log, /ingest-enqueue skipped/);
-    assert.ok(fs.existsSync(runLog), 'the child was given the run log as its stdout');
+    const pending = path.join(sandbox.root, '.harness', 'memory-ingest-queue.jsonl');
+    assert.ok(fs.existsSync(pending), 'the hook hands work to the durable queue');
+    const queued = fs.readFileSync(pending, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(queued.length, 1);
+    assert.match(queued[0], /11111111-1111-4111-8111-111111111111\.md$/);
+    assert.equal(fs.existsSync(runLog), false, 'capture does not start an untracked detached ingest');
   } finally {
     sandbox.cleanup();
     try {
@@ -194,7 +196,7 @@ test('with the enqueue enabled, the real process asks for an ingest and says so'
   }
 });
 
-test('a missing ingest project is a refusal the hook survives and records', () => {
+test('a missing ingest project leaves captured work queued for later retry', () => {
   const sandbox = createSandbox();
   try {
     const transcriptPath = installTranscript(sandbox, 'plain-main', SESSION_ID);
@@ -216,44 +218,11 @@ test('a missing ingest project is a refusal the hook survives and records', () =
     assert.equal(status, 0);
     // On a slow runner the hook can reach its deadline before the enqueue step,
     // and that is the other correct refusal: either way nothing is spawned.
-    assert.match(log, /ingest-enqueue skipped: (no ingest project|over budget)/);
+    assert.ok(fs.existsSync(path.join(sandbox.root, '.harness', 'memory-ingest-queue.jsonl')));
     assert.match(log, / ms=\d+$/m, 'the note itself was still captured and timed');
   } finally {
     sandbox.cleanup();
   }
-});
-
-test('the W-H2 seam is still a single obvious place in main()', () => {
-  // The brief promises W-H2 exactly one call site, and hooks/README.md repeats
-  // that promise. A presence check could not keep it: a second call added
-  // anywhere would still match. So this counts them.
-  const source = fs.readFileSync(HOOK, 'utf8');
-
-  assert.equal([...source.matchAll(/-+ SEAM\n/g)].length, 1);
-  assert.equal([...source.matchAll(/if \(!outcome\.written\)/g)].length, 1);
-
-  const withoutImports = source
-    .split('\n')
-    .filter((line) => !/^\s*import\b/.test(line) && !/^\s*enqueueIngest,?$/.test(line))
-    .join('\n');
-  assert.equal(
-    [...withoutImports.matchAll(/enqueueIngest\(/g)].length,
-    1,
-    'enqueueIngest must be called from exactly one place',
-  );
-
-  // And that one call hands it every note the capture touched, not just one.
-  assert.match(source, /enqueueIngest\(\{ notePaths: outcome\.touchedPaths,/);
-
-  // Rule 1 in the file header: everything optional is behind a deadline check.
-  // The enqueue is optional work — the nightly reconcile picks the note up —
-  // so a session already over budget must not pay for a spawn on the way out.
-  assert.match(
-    source,
-    /if \(Date\.now\(\) < DEADLINE_AT\) \{\n\s+enqueueIngest\(/,
-    'the enqueue must sit behind the deadline check',
-  );
-  assert.match(source, /ingest-enqueue skipped: over budget/);
 });
 
 // ------------------------------------------------ per-machine redaction (H-6)

@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Claude Code and Codex session capture: one session, one vault note.",
+  "description": "Model-agnostic Claude Code, Codex, and Hermes memory capture.",
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "goldens": "node tests/update-goldens.mjs",
@@ -11,6 +11,6 @@
     "untagged": "node untagged-sessions.mjs"
   },
   "engines": {
-    "node": ">=20.11"
+    "node": ">=22.13"
   }
 }

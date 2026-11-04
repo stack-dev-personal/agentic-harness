@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, SOURCE_OBSIDIAN, DbSettings
 from .errors import ConfigError, StoreError
-from .store import realm_clause, connect_kwargs
+from .store import OWN_MACHINE_CLAUSE, realm_clause, connect_kwargs
 from .verify import ChunkText, DocumentRow, NormRow, SampledChunk, VaultRow
 
 log = logging.getLogger(__name__)
@@ -113,8 +113,10 @@ class PostgresReader:
             int(r[0]), str(r[1]), str(r[2]), int(r[3]), str(r[4]), None if r[5] is None else int(r[5]),
         ))
 
-    def vault_rows(self, realm: str | None) -> tuple[VaultRow, ...]:
+    def vault_rows(self, realm: str | None, machine: str | None = None) -> tuple[VaultRow, ...]:
         clause, params = realm_clause(realm)
+        if machine is not None:
+            clause, params = f"{clause} AND {OWN_MACHINE_CLAUSE}", (*params, machine)
         sql = f"{_SELECT_VAULT_ROWS} AND {clause}"
         scope = f"realm {realm}" if realm else "legacy rows"
         return self._select(f"vault rows ({scope})", sql, (SOURCE_OBSIDIAN, *params), _vault_row)

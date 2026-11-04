@@ -122,7 +122,7 @@ WHERE source = %s AND external_id = %s
 # collection is invisible, because `filter_collection` just stops matching.
 _UPDATE_METADATA = f"""
 UPDATE {DOCUMENTS_TABLE}
-SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb, body = %s
 WHERE id = %s
 """
 
@@ -133,6 +133,12 @@ _DELETE_CHUNKS = f"DELETE FROM {CHUNKS_TABLE} WHERE document_id = %s"
 # `_ingest` carries no `realm` key — the rows written before realms existed.
 _IN_REALM = "metadata @> %s::jsonb"
 _NO_REALM = "NOT (metadata ? '_ingest' AND metadata->'_ingest' ? 'realm')"
+# The orphan sweep's machine scope: a row whose note names another machine is
+# that machine's to sweep. A row with no `machine:`, or an empty one (a hub, a
+# handoff, a session captured before machine.env existed), belongs to whoever
+# holds the realm. ``prune.owned_by`` states the same rule in Python; keep both.
+# Public: the store audit (``verify_store``) scopes its reads with it too.
+OWN_MACHINE_CLAUSE = "coalesce(metadata->>'machine', '') IN ('', %s)"
 
 _SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source = %s AND "
 
@@ -197,12 +203,16 @@ _EVENTS_MISSING_WARNING = (
 )
 
 
-def _sweep_clause(realm: str | None, written_before: datetime | None) -> tuple[str, tuple[Any, ...]]:
-    """:func:`realm_clause`, plus the orphan sweep's cutoff when there is one."""
+def _sweep_clause(
+    realm: str | None, written_before: datetime | None, machine: str | None = None
+) -> tuple[str, tuple[Any, ...]]:
+    """:func:`realm_clause`, plus the sweep's cutoff and machine scope when given."""
     clause, params = realm_clause(realm)
-    if written_before is None:
-        return clause, params
-    return f"{clause} AND updated_at < %s", (*params, written_before)
+    if written_before is not None:
+        clause, params = f"{clause} AND updated_at < %s", (*params, written_before)
+    if machine is not None:
+        clause, params = f"{clause} AND {OWN_MACHINE_CLAUSE}", (*params, machine)
+    return clause, params
 
 
 def _event_row(
@@ -257,7 +267,11 @@ class ChunkStore(Protocol):
     ) -> None: ...
 
     def list_external_ids(
-        self, source: str, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> set[str]:
         """Ids of ``source`` inside ``realm``.
 
@@ -265,7 +279,10 @@ class ChunkStore(Protocol):
         ``_ingest.realm`` at all — rows ingested before realms existed. A realm
         this machine never walked is never listed, which is what keeps two vaults
         sharing one store from pruning each other. ``written_before`` keeps only
-        rows whose ``updated_at`` is earlier.
+        rows whose ``updated_at`` is earlier. ``machine`` keeps only rows this
+        machine may sweep: ones whose note carries no ``machine:`` or names this
+        one, so two clones of one realm that have not synced yet cannot delete
+        each other's sessions.
         """
         ...
 
@@ -275,6 +292,7 @@ class ChunkStore(Protocol):
         external_ids: Sequence[str],
         realm: str | None = None,
         written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> int: ...
 
     def database_now(self) -> datetime | None:
@@ -503,9 +521,10 @@ class PostgresStore:
     def update_document_metadata(
         self, document_id: int, document: SourceDocument
     ) -> None:
-        """Refresh everything but the body, leaving every chunk in place.
+        """Refresh raw display content and metadata, leaving every chunk in place.
 
-        The body — and therefore every embedding derived from it — is unchanged,
+        The canonical embedding view is unchanged, although the raw body may
+        contain updated provenance or lifecycle facts,
         so re-chunking and re-embedding would produce byte-identical vectors at
         the cost of a model pass per document.
         """
@@ -521,6 +540,7 @@ class PostgresStore:
                         document.collection,
                         document.agent,
                         dumps(document.metadata),
+                        document.body,
                         document_id,
                     ),
                 )
@@ -549,9 +569,13 @@ class PostgresStore:
     # -- orphan sweep ------------------------------------------------------
 
     def list_external_ids(
-        self, source: str, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> set[str]:
-        clause, params = _sweep_clause(realm, written_before)
+        clause, params = _sweep_clause(realm, written_before, machine)
 
         def _list() -> list[tuple]:
             with self._conn.cursor() as cur:
@@ -574,11 +598,12 @@ class PostgresStore:
         external_ids: Sequence[str],
         realm: str | None = None,
         written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> int:
         ids = list(external_ids)
         if not ids:
             return 0
-        clause, params = _sweep_clause(realm, written_before)
+        clause, params = _sweep_clause(realm, written_before, machine)
 
         def _delete():
             # One statement, so a retry after a dropped connection deletes nothing twice.
@@ -730,7 +755,11 @@ class NullStore:
         raise StoreError("NullStore cannot write. This is a --dry-run store.")
 
     def list_external_ids(
-        self, source: str, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> set[str]:
         return set()
 
@@ -738,7 +767,12 @@ class NullStore:
         return None
 
     def delete_documents(
-        self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        external_ids,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> int:
         raise StoreError("NullStore cannot delete. This is a --dry-run store.")
 

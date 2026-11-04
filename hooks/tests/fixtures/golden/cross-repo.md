@@ -66,6 +66,7 @@ hook_tags:
   - 'docs'
   - 'validation'
   - 'planning'
+runtime: 'claude-code'
 ---
 
 # 2026-09-12 · bb2dash · From the bb2dash checkout, fix the

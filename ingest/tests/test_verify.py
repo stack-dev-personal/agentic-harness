@@ -201,9 +201,10 @@ class FakeReader:
             for c in self.chunks
         ]
 
-    def vault_rows(self, realm: str | None) -> list[VaultRow]:
+    def vault_rows(self, realm: str | None, machine: str | None = None) -> list[VaultRow]:
         return [VaultRow(d.external_id, d.content_hash, d.path, d.written_at) for d in self.docs
-                if d.source == "obsidian" and d.realm == realm]
+                if d.source == "obsidian" and d.realm == realm
+                and (machine is None or getattr(d, "machine", None) in (None, "", machine))]
 
     def chunk_ids(self) -> list[int]:
         return [c.chunk_id for c in reversed(self.chunks)]  # order must not matter

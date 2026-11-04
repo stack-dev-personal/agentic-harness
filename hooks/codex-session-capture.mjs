@@ -6,11 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { analyseTranscript } from './lib/analyse.mjs';
-import { isSubagentHead, readCodexHead } from './lib/codex-head.mjs';
-import { writeNote } from './lib/capture.mjs';
-import { queueCodexIngest } from './lib/codex-ingest-queue.mjs';
+import { isSubagentHead, readCodexHead, resolveCodexTranscript } from './lib/codex-head.mjs';
+import { captureSession } from './lib/capture.mjs';
+import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
+import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
+import { queueIngest } from './lib/ingest-queue.mjs';
 import { MAIN_TRANSCRIPT_MAX_BYTES, RESERVE_MS, RESUME_REASON, SESSIONS_DIR, STATUS_ACTIVE, STATUS_CONCLUDED, VAULT_ENV_VAR } from './lib/constants.mjs';
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv, machineName } from './lib/machine-env.mjs';
@@ -249,64 +250,45 @@ function firstPromptFromHead(file, fallback) {
 
 export function captureCodex({
   input, vaultRoot, deadlineAt = Date.now() + BUDGET_MS, runGit, capturedBy = 'hook',
-  stateDir = defaultStateDir(process.env),
+  stateDir = defaultStateDir(process.env), home = os.homedir(),
+  allowSubagent = false, ownTask = '', childSessions = [], env = process.env,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, touchedPaths: [], vaultRoot });
+  input = { ...input, runtime: 'codex' };
+  const policy = sessionMemoryEligibility({ input, env });
+  if (!policy.allowed) return { ...skip(policy.reason), action: 'excluded' };
   if (input.hookEventName !== 'SessionEnd') return skip('not SessionEnd');
-  const transcriptPath = input.transcriptPath;
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return skip('transcript unavailable');
-  // Fail closed: without session_meta a subagent rollout cannot be told apart.
+  const native = captureCodexSqliteSession({ home, sessionId: input.sessionId, endReason: input.endReason,
+    vaultRoot, env, deadlineAt, runGit, stateDir, capturedBy });
+  if (native) return native;
+  const transcriptPath = resolveCodexTranscript({ declaredPath: input.transcriptPath,
+    sessionId: input.sessionId, home, deadlineAt: Math.min(deadlineAt - RESERVE_MS, Date.now() + 500) });
+  if (!transcriptPath) return skip('transcript unavailable');
   const { record: head, error: headError } = readCodexHead(transcriptPath);
   if (!head) return skip(`transcript head ${headError}`);
-  if (isSubagentHead(head)) return skip('subagent transcript');
-  const cwd = toPosix(head?.payload?.cwd || input.cwd);
-  const records = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt);
+  if (head.payload?.id && head.payload.id !== input.sessionId) return skip('transcript session id mismatch');
+  const child = isSubagentHead(head);
+  if (child && !allowSubagent) return skip('subagent transcript');
+  if (child && !ownTask) return skip('child task unavailable; inherited context excluded');
+  const cwd = toPosix(head.payload?.cwd || input.cwd);
+  let records = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt);
   if (!records.length) return skip('transcript unreadable or empty');
-  if (records[0]?.type !== 'session_meta' && head) records.unshift(head);
+  if (child) records = records.filter(record => record.timestamp >= head.timestamp);
+  if (records[0]?.type !== 'session_meta') records.unshift(head);
   const parsed = extractCodexTurns(records, cwd);
-  const prompts = extractPrompts(parsed.entries);
-  if (!prompts.length) return skip('no human prompts');
-  if (!vaultAvailable(vaultRoot)) return skip('vault unavailable');
-
-  const facts = analyseTranscript({
-    entries: parsed.entries, prompts, cwd, transcriptPath, vaultRoot, deadlineAt, runGit,
-  });
-  const secrets = knownSecrets(prompts, facts.accumulator);
-  const searches = extractRetrievals(parsed.entries, { secrets });
-  // What codex-session-start.mjs injected, keyed by Codex's own thread id.
-  const brief = readSessionStartRecord({ sessionId: input.sessionId, stateDir });
-  const retrievals = brief.record ? [brief.record, ...searches.records] : searches.records;
-  const concluded = input.endReason !== RESUME_REASON;
-  const sessionId = `codex-${input.sessionId}`;
-  const context = {
-    sessionId, noteId: noteId(sessionId), collection: facts.collection,
-    collectionSource: facts.collectionSource,
-    date: isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString()),
-    cwd: facts.cwd, cwdsSeen: facts.cwdsSeen, endReason: input.endReason,
-    startedAt: facts.timing.startedAt, endedAt: facts.timing.endedAt,
-    durationMs: facts.timing.durationMs, status: concluded ? STATUS_CONCLUDED : STATUS_ACTIVE,
-    concludedAt: concluded ? facts.timing.endedAt : '', repo: facts.repo.repoFullName,
-    branch: facts.branch, worktree: facts.repo.worktree,
-    reposTouched: facts.paths.reposTouched, phase: facts.phase, tags: facts.tags,
-    supersedes: [], resumedFrom: '', parentSession: '', childSessions: [],
-    agentType: '', origin: parsed.origin, machine: machineName(process.env),
-    capturedBy, agent: 'codex', generator: GENERATOR,
-    commits: facts.commits, prs: facts.prs, memoryFiles: facts.paths.memoryFiles,
-    planFile: facts.paths.planFile, docsTouched: facts.paths.docsTouched,
-    artifacts: facts.artifacts, files: facts.paths.files, prompts,
-    titlePrompt: fs.statSync(transcriptPath).size > MAIN_TRANSCRIPT_MAX_BYTES
-      ? firstPromptFromHead(transcriptPath, prompts[0].text) : prompts[0].text,
-    outcome: extractOutcome(parsed.entries),
-    knownSecrets: secrets,
-    retrievals,
-    retrieved: retrievedLinks(searches.hits, { vaultRoot, deadlineAt: deadlineAt - RESERVE_MS }),
-    commands: facts.accumulator.commands, commandCount: facts.accumulator.commandCount,
-    agents: facts.accumulator.agents, skills: [...facts.accumulator.skills], toolCounts: facts.toolCounts,
-    subagentFilesRead: 0, transcriptPath,
-  };
-  return writeNote({
-    context, sessionsDir: path.join(vaultRoot, facts.area, facts.collection, SESSIONS_DIR),
-    area: facts.area, collection: facts.collection, vaultRoot,
+  if (child) {
+    parsed.entries = parsed.entries.filter(entry => entry.type !== 'user' || Array.isArray(entry.message?.content));
+    parsed.entries.unshift({ type: 'user', origin: { kind: 'human' }, timestamp: head.timestamp, cwd, message: { content: ownTask } });
+  }
+  const parent = head.payload?.parent_thread_id || head.payload?.source?.subagent?.thread_spawn?.parent_thread_id;
+  const latestContext = records.findLast(record => record.type === 'turn_context')?.payload;
+  return captureSession({ input: { ...input, cwd, transcriptPath, sessionId: `codex-${input.sessionId}` },
+    vaultRoot, entries: parsed.entries, runGit, capturedBy, stateDir, deadlineAt, env,
+    agent: 'codex', runtime: 'codex', model: latestContext?.model || '', provider: latestContext?.model_provider || '',
+    origin: parsed.origin, generator: GENERATOR,
+    briefSessionId: input.sessionId,
+    parentSession: parent ? `codex-${parent}` : '', childSessions,
+    promptTask: ownTask,
   });
 }
 
@@ -329,9 +311,7 @@ function main() {
   });
   if (!outcome.written) return log(`${outcome.action}: ${outcome.skip} ms=${Date.now() - startedAt}`);
   if (Date.now() < deadlineAt) {
-    if (process.platform === 'darwin') queueCodexIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log, startTask: false });
-    else if (process.platform === 'win32') queueCodexIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
-    else enqueueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
+    queueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
   }
   log(`${outcome.action}: ${outcome.detail} ms=${Date.now() - startedAt}`);
 }

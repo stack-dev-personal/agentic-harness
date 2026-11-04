@@ -36,6 +36,19 @@ from .store import ChunkStore
 log = logging.getLogger(__name__)
 
 
+def owned_by(metadata: dict, machine: str | None) -> bool:
+    """Is a row this machine's to sweep? The rule behind ``store.OWN_MACHINE_CLAUSE``.
+
+    No scope (``machine=None``) owns everything, as before machines existed. A
+    row whose note carries no ``machine:``, or an empty one (the hooks write
+    ``machine: ''`` when ``HARNESS_MACHINE`` is unset), belongs to whoever holds
+    the realm. A row naming another machine is that machine's.
+    """
+    if machine is None:
+        return True
+    return metadata.get("machine") in (None, "", machine)
+
+
 @dataclass(frozen=True)
 class PruneResult:
     """What the sweep found and whether it acted."""
@@ -66,6 +79,7 @@ def prune_orphans(
     limited: bool = False,
     realm: str | None = None,
     written_before: datetime | None = None,
+    machine: str | None = None,
 ) -> PruneResult:
     """Delete documents of ``source`` inside ``realm`` whose ``external_id`` was not seen.
 
@@ -73,6 +87,9 @@ def prune_orphans(
     is never listed, so two vaults sharing one store cannot prune each other.
     ``realm=None`` sweeps only the rows written before realms existed.
     ``written_before`` keeps every row written at or after it (see the module doc).
+    ``machine`` keeps every row whose note names another machine: two clones of
+    one realm that have not synced yet hold different notes, and the other
+    machine's sessions are not this walk's orphans. The CLI always passes it.
     """
     label = f"{source}/{realm or 'legacy'}"
     declined = _decline_reason(document_count, failure_count, limited)
@@ -81,11 +98,13 @@ def prune_orphans(
         return PruneResult(source=source, realm=realm, declined_reason=declined)
 
     seen = {str(value) for value in seen_external_ids}
-    unseen = store.list_external_ids(source, realm=realm) - seen
+    unseen = store.list_external_ids(source, realm=realm, machine=machine) - seen
     if written_before is None:
         orphans = tuple(sorted(unseen))
     else:
-        orphans = tuple(sorted(store.list_external_ids(source, realm=realm, written_before=written_before) & unseen))
+        orphans = tuple(sorted(
+            store.list_external_ids(source, realm=realm, written_before=written_before, machine=machine) & unseen
+        ))
     spared = tuple(sorted(unseen - set(orphans)))
     if spared:
         log.info("Orphan sweep for %s kept %d row(s) written during this run", label, len(spared))
@@ -95,10 +114,12 @@ def prune_orphans(
     if dry_run:
         return PruneResult(source=source, realm=realm, orphans=orphans, spared=spared, performed=False)
 
-    deleted = store.delete_documents(source, orphans, realm=realm, written_before=written_before)
+    deleted = store.delete_documents(
+        source, orphans, realm=realm, written_before=written_before, machine=machine
+    )
     if written_before is not None and deleted < len(orphans):
         # The delete's own cutoff test kept rows rewritten since the listing.
-        kept = store.list_external_ids(source, realm=realm) & set(orphans)
+        kept = store.list_external_ids(source, realm=realm, machine=machine) & set(orphans)
         orphans = tuple(sorted(set(orphans) - kept))
         spared = tuple(sorted(set(spared) | kept))
     log.info("Orphan sweep removed %d document(s) from %s", deleted, label)

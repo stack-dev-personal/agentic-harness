@@ -60,9 +60,10 @@ def run_audit(
     *,
     sample_size: int,
     seed: int | None,
+    machine: str | None = None,
 ) -> VerifyReport:
     """Every check, in report order. Store and embedding errors propagate."""
-    scoped, legacy = _vault_rows(reader, snapshot)
+    scoped, legacy = _vault_rows(reader, snapshot, machine)
     return VerifyReport((
         check_chunks(reader.documents()),
         check_embeddings(reader.embedding_norms()),
@@ -207,7 +208,7 @@ def _compare_scope(
         row = stored.get(external_id)
         if row is None:
             findings.append(Finding(external_id, f"{where}: ingestable note{_path_of(doc)} has no row"))
-        elif row.content_hash != content_hash(doc.body):
+        elif row.content_hash != content_hash(doc.embedding_body if doc.embedding_body is not None else doc.body):
             findings.append(Finding(external_id, f"{where}: stored content_hash differs from the note{_path_of(doc)}"))
     for external_id in sorted(stored.keys() - by_id.keys()):
         findings.append(Finding(external_id, f"{where}: {_orphan_detail(stored[external_id], skipped)}"))
@@ -244,18 +245,19 @@ def _path_of(document: SourceDocument) -> str:
 
 
 def _vault_rows(
-    reader: StoreReader, snapshot: VaultSnapshot
+    reader: StoreReader, snapshot: VaultSnapshot, machine: str | None = None
 ) -> tuple[dict[str | None, Sequence[VaultRow]], Sequence[VaultRow]]:
     """Rows per realm plus the legacy rows, scoped exactly as cli.py's orphan sweep is.
 
     An unmarked vault is one scope: the legacy rows, the only ones its sweep
     (``--prune-legacy``, realm ``None``) can delete. Rows another machine wrote
-    under a realm are outside it, so they are neither compared nor reported.
+    under a realm, or that name another ``machine:`` when one is given, are
+    outside it, so they are neither compared nor reported.
     """
     if not snapshot.realms:
-        return {None: reader.vault_rows(None)}, ()
-    scoped = {realm: reader.vault_rows(realm) for realm in snapshot.realms}
-    return scoped, reader.vault_rows(None)
+        return {None: reader.vault_rows(None, machine)}, ()
+    scoped = {realm: reader.vault_rows(realm, machine) for realm in snapshot.realms}
+    return scoped, reader.vault_rows(None, machine)
 
 
 # -- duplicate-ids -----------------------------------------------------------------------

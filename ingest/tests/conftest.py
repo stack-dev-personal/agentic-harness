@@ -10,10 +10,19 @@ from typing import Sequence
 import pytest
 
 from ingest.config import EMBEDDING
+from ingest.prune import owned_by
 from ingest.errors import StoreError
 from ingest.models import Chunk, DocumentState, RetrievalEvent, SourceDocument
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def isolate_memory_policy_environment(tmp_path: Path, monkeypatch):
+    """Tests never consult real session exclusion markers or machine policy."""
+    monkeypatch.setenv("HARNESS_MEMORY_STATE_DIR", str(tmp_path / "memory-state"))
+    monkeypatch.delenv("HARNESS_MEMORY_EXCLUDED_ROOTS", raising=False)
+    monkeypatch.delenv("HARNESS_MEMORY_PERSISTENCE", raising=False)
 
 
 @pytest.fixture
@@ -58,6 +67,11 @@ def _realm_of(state: DocumentState) -> str | None:
     return ingest_meta.get("realm") if isinstance(ingest_meta, dict) else None
 
 
+def _own_machine(state: DocumentState, machine: str | None) -> bool:
+    """The sweep's own ownership rule, so the fake cannot drift from the SQL it mirrors."""
+    return owned_by(state.metadata, machine)
+
+
 class FakeStore:
     """In-memory ChunkStore that records every write."""
 
@@ -65,6 +79,7 @@ class FakeStore:
         self.documents: dict[tuple[str, str], DocumentState] = {}
         self.chunks: dict[int, list[Chunk]] = {}
         self.embeddings: dict[int, list[list[float]]] = {}
+        self.bodies: dict[tuple[str, str], str] = {}
         self.write_calls = 0
         self.metadata_writes = 0
         self.lookup_calls = 0
@@ -110,6 +125,7 @@ class FakeStore:
             document_id = existing.document_id
             inserted = False
         self.documents[key] = _state(document_id, content_hash, document)
+        self.bodies[key] = document.body
         self.written_at[key] = self.now
         self.chunks[document_id] = list(chunks)
         self.embeddings[document_id] = [list(e) for e in embeddings]
@@ -122,22 +138,33 @@ class FakeStore:
                 continue
             self.metadata_writes += 1
             self.documents[key] = _state(document_id, state.content_hash, document)
+            self.bodies[key] = document.body
             self.written_at[key] = self.now
             return
         raise StoreError(f"no document with id {document_id}")
 
     def list_external_ids(
-        self, source: str, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> set[str]:
         return {
             external_id
             for (src, external_id), state in self.documents.items()
             if src == source and _realm_of(state) == realm
             and self._written_before((src, external_id), written_before)
+            and _own_machine(state, machine)
         }
 
     def delete_documents(
-        self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None
+        self,
+        source: str,
+        external_ids,
+        realm: str | None = None,
+        written_before: datetime | None = None,
+        machine: str | None = None,
     ) -> int:
         deleted = 0
         for external_id in external_ids:
@@ -145,6 +172,8 @@ class FakeStore:
             if state is None or _realm_of(state) != realm:
                 continue
             if not self._written_before((source, external_id), written_before):
+                continue
+            if not _own_machine(state, machine):
                 continue
             self.documents.pop((source, external_id))
             self.written_at.pop((source, external_id), None)

@@ -8,7 +8,7 @@ from ingest.chunking import MarkdownChunker
 from ingest.config import ChunkConfig
 from ingest.models import SourceDocument
 from ingest.pipeline import IngestPipeline
-from ingest.prune import prune_orphans
+from ingest.prune import owned_by, prune_orphans
 from ingest.store import NullStore
 
 SMALL = ChunkConfig(target_tokens=40, overlap_tokens=8, min_tokens=5, hard_max_tokens=80)
@@ -162,6 +162,45 @@ def test_sweep_never_touches_another_realm(fake_store, fake_embedder):
     assert fake_store.list_external_ids("obsidian", realm="work-vm") == {"work-vm/b.md"}
 
 
+def machine_document(external_id: str, machine: str) -> SourceDocument:
+    """A captured session note: its frontmatter names the machine that wrote it."""
+    return SourceDocument(
+        source="obsidian",
+        external_id=external_id,
+        body=f"Body for {external_id}, with enough words to make a chunk.",
+        title=external_id,
+        agent="claude-code",
+        metadata={"_ingest": {"loader": "obsidian", "path": external_id, "realm": "projects"}, "machine": machine},
+    )
+
+
+def test_sweep_never_touches_a_row_another_machine_captured(fake_store, fake_embedder):
+    # Two machines hold clones of `projects` that have not synced yet. The laptop's
+    # walk cannot see the Mac's note, but the Mac's session is not an orphan. A row
+    # with no `machine:` (a hub), one with an empty `machine: ''` (captured before
+    # machine.env existed) and the laptop's own unseen row still are.
+    ingest(fake_store, fake_embedder, [
+        machine_document("projects/laptop.md", "stack-laptop"),
+        machine_document("projects/mac.md", "stack-mac"),
+        machine_document("projects/blank.md", ""),
+        realm_document("projects/hub.md", "projects"),
+        realm_document("projects/old-hub.md", "projects"),
+    ])
+    result = prune_orphans(
+        fake_store, "obsidian", ["projects/hub.md"], document_count=1, realm="projects", machine="stack-laptop"
+    )
+    assert result.orphans == ("projects/blank.md", "projects/laptop.md", "projects/old-hub.md")
+    assert result.deleted == 3
+    assert fake_store.list_external_ids("obsidian", realm="projects") == {"projects/hub.md", "projects/mac.md"}
+
+
+def test_owned_by_states_the_sweep_rule():
+    assert owned_by({}, None) and owned_by({"machine": "stack-mac"}, None)
+    assert owned_by({}, "stack-laptop") and owned_by({"machine": ""}, "stack-laptop")
+    assert owned_by({"machine": "stack-laptop"}, "stack-laptop")
+    assert not owned_by({"machine": "stack-mac"}, "stack-laptop")
+
+
 def test_a_realm_this_machine_did_not_walk_is_never_listed(fake_store):
     assert fake_store.list_external_ids("obsidian", realm="work-vm") == set()
     assert fake_store.delete_documents("obsidian", ["work-vm/b.md"], realm="work-vm") == 0
@@ -248,13 +287,13 @@ def test_a_row_the_delete_recheck_keeps_is_reported_as_spared_not_deleted(fake_s
     cutoff = fake_store.advance(minutes=1)
     real_delete = fake_store.delete_documents
 
-    def rewrite_then_delete(source, external_ids, realm=None, written_before=None):
+    def rewrite_then_delete(source, external_ids, realm=None, written_before=None, machine=None):
         fake_store.advance(seconds=5)
         ingest(fake_store, fake_embedder, [SourceDocument(
             source="obsidian", external_id="a.md", title="a.md", agent="claude-code",
             body="Rewritten by a hook between the listing and the delete.",
         )])
-        return real_delete(source, external_ids, realm=realm, written_before=written_before)
+        return real_delete(source, external_ids, realm=realm, written_before=written_before, machine=machine)
 
     fake_store.delete_documents = rewrite_then_delete
     result = prune_orphans(fake_store, "obsidian", [], document_count=1, written_before=cutoff)

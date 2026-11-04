@@ -456,7 +456,7 @@ test('R-B4: every git call carries the identity, no prompts, stderr capture and 
     for (const { args, options } of calls) {
       assert.deepEqual({ ...options.env }, expected, args.join(' '));
       assert.equal(options.captureStderr, true);
-      assert.equal(options.timeoutMs, ['pull', 'push'].includes(args[0]) ? 120_000 : 30_000, args.join(' '));
+      assert.equal(options.timeoutMs, ['pull', 'push'].includes(args[0]) ? 120_000 : 90_000, args.join(' '));
     }
   }));
 

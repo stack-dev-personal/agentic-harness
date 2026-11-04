@@ -29,6 +29,7 @@ import {
 import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
 import { machineName } from './machine-env.mjs';
+import { canonicalPath, pathWithin, entryPaths, sessionMemoryEligibility, memoryPolicyFields } from './memory-policy.mjs';
 import {
   ACTION_CREATE,
   ACTION_MERGE,
@@ -41,7 +42,7 @@ import { buildFields, childNoteId, noteFilename, noteId, renderBody, renderNote 
 import { ensureIndex, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
 import { defaultStateDir, readSessionStartRecord } from './session-start.mjs';
-import { isoDate, uniqueCapped } from './text.mjs';
+import { isoDate, uniqueCapped, isSafeFilenameSegment } from './text.mjs';
 import {
   extractOrigin,
   extractOutcome,
@@ -67,7 +68,12 @@ import {
  * @returns {{written: boolean, action: string, skip: string, notePath: string,
  *            touchedPaths: string[], vaultRoot: string, detail: string}}
  */
-export function capture({
+export function capture(options) {
+  return captureSession({ ...options, agent: 'claude-code', runtime: 'claude-code' });
+}
+
+/** Canonical capture entry point. Native adapters provide normalized entries. */
+export function captureSession({
   input,
   vaultRoot,
   projectsRoot,
@@ -76,19 +82,29 @@ export function capture({
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
   stateDir = defaultStateDir(process.env),
+  entries: suppliedEntries,
+  agent = 'unknown', runtime = agent, model = '', provider = '', origin,
+  generator, parentSession, childSessions, promptTask,
+  briefSessionId = input.sessionId,
+  env = process.env,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
+  if (!isSafeFilenameSegment(input.sessionId)) return skip('invalid session id');
+  if ((parentSession || input.parentSession) && !isSafeFilenameSegment(parentSession || input.parentSession)) return skip('invalid parent session id');
 
-  const transcriptPath = resolveTranscript({
+  input = { ...input, runtime, parentSession: parentSession ?? input.parentSession };
+  const eligibility = sessionMemoryEligibility({ input, env });
+  if (!eligibility.allowed) return { ...skip(eligibility.reason), action: 'excluded' };
+  const transcriptPath = suppliedEntries ? input.transcriptPath || '' : resolveTranscript({
     declaredPath: input.transcriptPath,
     sessionId: input.sessionId,
     cwd: input.cwd,
     projectsRoot,
     deadlineAt,
   });
-  if (!transcriptPath) return skip('no transcript found');
+  if (!suppliedEntries && !transcriptPath) return skip('no transcript found');
 
-  const entries = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt - RESERVE_MS);
+  const entries = suppliedEntries ?? readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt - RESERVE_MS);
   if (entries.length === 0) return skip('transcript unreadable or empty');
 
   const prompts = extractPrompts(entries);
@@ -100,12 +116,15 @@ export function capture({
   // into the same accumulator before anything is derived from it.
   const accumulator = createAccumulator();
   extractTools(entries, accumulator);
-  const subagents = extractSubagentTools({
+  const subagents = suppliedEntries ? { agentIds: [], filesRead: 0 } : extractSubagentTools({
     transcriptPath,
     sessionId: input.sessionId,
     into: accumulator,
     deadlineAt: deadlineAt - RESERVE_MS,
   });
+
+  const touched = sessionMemoryEligibility({ input, env, paths: [...entryPaths(entries), ...accumulator.files.keys(), ...accumulator.filesRead.keys()] });
+  if (!touched.allowed) return { ...skip(touched.reason), action: 'excluded' };
 
   const facts = analyseTranscript({
     entries,
@@ -124,7 +143,7 @@ export function capture({
   // notes) plus what the SessionStart brief injected, when it left a record.
   const secrets = knownSecrets(prompts, accumulator);
   const searches = extractRetrievals(entries, { secrets });
-  const brief = readSessionStartRecord({ sessionId: input.sessionId, stateDir });
+  const brief = readSessionStartRecord({ sessionId: briefSessionId, stateDir });
   const retrievals = brief.record ? [brief.record, ...searches.records] : searches.records;
 
   const context = {
@@ -149,18 +168,21 @@ export function capture({
     tags: facts.tags,
     supersedes: [],
     resumedFrom: '',
-    parentSession: input.parentSession || parentSessionFromPath(transcriptPath),
+    parentSession: parentSession ?? (input.parentSession || parentSessionFromPath(transcriptPath)),
+    ancestorSessions: Array.isArray(input.ancestorSessions) ? [...input.ancestorSessions] : [],
     // The child note ids, which are the ingest external_ids, so a search can
     // follow the link straight to the worker's own note. The `SubagentStop`
     // hook writes those notes; this back-fill is what makes the list complete
     // even for children that ended before their parent's note existed.
     childSessions: uniqueCapped(
-      subagents.agentIds.map((agentId) => childNoteId(input.sessionId, agentId)),
+      childSessions ?? subagents.agentIds.map((agentId) => childNoteId(input.sessionId, agentId)),
       MAX_CHILD_SESSIONS,
     ),
-    agentType: '',
-    origin: extractOrigin(entries),
-    machine: machineName(process.env),
+    agentType: input.agentType || '',
+    origin: origin ?? extractOrigin(entries),
+    agent, runtime, model: model || entries.findLast(entry => typeof entry.message?.model === 'string')?.message?.model || '', provider, generator,
+    ...memoryPolicyFields(input),
+    machine: machineName(env),
     capturedBy,
     commits: facts.commits,
     prs: facts.prs,
@@ -170,7 +192,7 @@ export function capture({
     artifacts: facts.artifacts,
     files: facts.paths.files,
     prompts,
-    titlePrompt: firstPromptText(transcriptPath, prompts, MAIN_TRANSCRIPT_MAX_BYTES),
+    titlePrompt: promptTask || (suppliedEntries ? prompts[0]?.text : firstPromptText(transcriptPath, prompts, MAIN_TRANSCRIPT_MAX_BYTES)),
     outcome: extractOutcome(entries),
     knownSecrets: secrets,
     retrievals,
@@ -191,12 +213,20 @@ export function capture({
 // -------------------------------------------------------------- the write
 
 export function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
-  const next = buildFields(context);
+  if (!isSafeFilenameSegment(context.sessionId) || !pathWithin(canonicalPath(vaultRoot), canonicalPath(sessionsDir))) {
+    return { written: false, action: 'skip', skip: 'invalid session id or vault destination', touchedPaths: [], vaultRoot };
+  }
   // The head of the chain, not the base note: once an `-r2` exists it is the
   // one that carries the session's current state, and planning against the
-  // superseded base would fork a new note on every later SessionEnd.
+  // superseded base would fork a new note on every later SessionEnd. The head
+  // also keeps its own id: planning with the base id renamed `-r2` back to
+  // `session-<id>` on every later merge, and the store then filed the head's
+  // content under the base note's row.
   const head = resolveChainHead(sessionsDir, context.sessionId);
+  const headContext = head.index > 1 ? { ...context, noteId: noteId(context.sessionId, head.index) } : context;
+  const next = buildFields(headContext);
   const targetPath = head.path;
+  if (!pathWithin(canonicalPath(vaultRoot), canonicalPath(targetPath))) return { written: false, action: 'skip', skip: 'note target outside vault', touchedPaths: [], vaultRoot };
 
   const current = readNote(targetPath);
   if (current.error) {
@@ -211,13 +241,13 @@ export function writeNote({ context, sessionsDir, area, collection, vaultRoot })
   }
 
   if (plan.action === ACTION_RESUME) {
-    return writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
+    return writeResumeNote({ context: headContext, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
   }
 
   const fields = withLinks(plan.fields, area);
   // The previous body carries anything Stack typed below the generated marker;
   // `renderBody` regenerates the machine sections and re-appends the rest.
-  const merged = { ...context, previousBody: current.body };
+  const merged = { ...headContext, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
     return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };

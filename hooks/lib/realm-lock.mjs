@@ -203,6 +203,11 @@ function evictStale(lockPath, judged, { pid, now }) {
 export function acquireRealmLock(realmRoot, { owner, pid = process.pid, now = new Date(), staleMs = REALM_LOCK_STALE_MS } = {}) {
   const lockPath = lockPathFor(realmRoot);
   if (!lockPath) return failed(NOT_A_CHECKOUT);
+  return acquirePathLock(lockPath, { owner, pid, now, staleMs });
+}
+
+/** Reuse the same atomic lock for the memory worker outside a git realm. */
+export function acquirePathLock(lockPath, { owner, pid = process.pid, now = new Date(), staleMs = REALM_LOCK_STALE_MS } = {}) {
   const token = randomUUID();
   const text = `${JSON.stringify({ pid, owner: String(owner ?? ''), startedAt: now.toISOString(), token })}\n`;
   let takenOver = null;

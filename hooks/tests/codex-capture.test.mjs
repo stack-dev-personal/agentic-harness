@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { captureCodex, extractCodexTurns, humanPrompt, literalArgument } from '../codex-session-capture.mjs';
 import { analyseTranscript } from '../lib/analyse.mjs';
 import { drainCodexIngest, queueCodexIngest, TASK_NAME } from '../lib/codex-ingest-queue.mjs';
-import { sweepCodex } from '../lib/codex-sweep.mjs';
+import { saveCodexCheckpoints, sweepCodex } from '../lib/codex-sweep.mjs';
+import { resolveCodexTranscript } from '../lib/codex-head.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
 import { writeSessionStartRecord } from '../lib/session-start.mjs';
 import { extractRetrievals } from '../lib/retrievals.mjs';
@@ -23,7 +24,7 @@ const message = (role, text, timestamp, phase) => ({
     content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] },
 });
 
-test('macOS SessionEnd queues notes for launchd without a detached ingest', { skip: process.platform !== 'darwin' }, () => {
+test('macOS SessionEnd queues notes for the launchd worker without a detached ingest', { skip: process.platform !== 'darwin' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-mac-queue-'));
   try {
     const vaultRoot = path.join(root, 'vault');
@@ -46,7 +47,7 @@ test('macOS SessionEnd queues notes for launchd without a detached ingest', { sk
         HARNESS_CODEX_CAPTURE_LOG: path.join(root, 'capture.log') },
     });
     assert.equal(result.status, 0, result.stderr);
-    const queued = fs.readFileSync(path.join(root, '.harness', 'codex-ingest-queue.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const queued = fs.readFileSync(path.join(root, '.harness', 'memory-ingest-queue.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(queued.includes(path.join(vaultRoot, 'projects', 'demo', 'sessions', `codex-${sessionId}.md`)));
     assert.ok(!fs.existsSync(path.join(root, '.claude', 'hooks', 'ingest-on-capture.log')));
   } finally {
@@ -266,7 +267,7 @@ test('Codex capture records the SessionStart brief as a retrieval, as Claude Cod
       message('assistant', 'It is on track.', at(2), 'final_answer'),
     ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
     const outcome = captureCodex({ input: { sessionId, transcriptPath, cwd,
-      hookEventName: 'SessionEnd', endReason: 'other' }, vaultRoot, stateDir });
+      hookEventName: 'SessionEnd', endReason: 'other' }, vaultRoot, stateDir, home: root });
     assert.equal(outcome.action, 'create');
     const fields = parseFrontmatter(fs.readFileSync(
       path.join(vaultRoot, 'projects', 'demo', 'sessions', `codex-${sessionId}.md`), 'utf8')).fields;
@@ -454,6 +455,77 @@ test('Codex sweep stops at its time budget and stays due', () => {
     const first = sweepCodex({ home, vaultRoot: path.join(home, 'vault'), capture, budgetMs: 1500, clock });
     assert.equal(first.truncated, true);
     assert.equal(sweepCodex({ home, vaultRoot: path.join(home, 'vault'), capture, now: Date.now() + 1000 }).due, true);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Codex checkpoints capture open chats, skip unchanged notes, and update later turns in place', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-checkpoint-'));
+  try {
+    const directory = path.join(home, '.codex', 'sessions');
+    const vaultRoot = path.join(home, 'vault');
+    const cwd = path.join(home, 'demo');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(path.join(vaultRoot, 'projects', 'demo', 'sessions'), { recursive: true });
+    fs.mkdirSync(cwd);
+    const id = randomUUID();
+    const file = path.join(directory, `rollout-${id}.jsonl`);
+    const records = [
+      { timestamp: at(0), type: 'session_meta', payload: { id, cwd, source: 'vscode' } },
+      message('user', 'Save my open chat.', at(1)),
+      message('assistant', 'First answer.', at(2), 'final_answer'),
+    ];
+    fs.writeFileSync(file, records.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const sweep = () => sweepCodex({ home, vaultRoot, capture: captureCodex, checkpoint: true });
+    const first = sweep();
+    assert.equal(first.written, 1, 'a fresh, open chat is captured immediately');
+    const note = first.touchedPaths[0];
+    assert.equal(parseFrontmatter(fs.readFileSync(note, 'utf8')).fields.status, 'active');
+    assert.deepEqual(sweep().touchedPaths, [note], 'a crash before queueing must requeue an already-written note');
+    saveCodexCheckpoints({ stateDir: path.join(home, '.harness'), vaultRoot, checkpoints: first.checkpoints });
+    assert.equal(sweep().eligible, 0, 'unchanged transcripts need no rewrite or ingest');
+    fs.appendFileSync(file, [message('user', 'One more question.', at(3)),
+      message('assistant', 'Second answer.', at(4), 'final_answer')].map(r => JSON.stringify(r)).join('\n') + '\n');
+    const later = new Date(fs.statSync(note).mtimeMs + 1000);
+    fs.utimesSync(file, later, later);
+    const second = sweepCodex({ home, vaultRoot, capture: captureCodex, checkpoint: true, now: later.getTime() + 1 });
+    assert.equal(second.written, 1);
+    assert.deepEqual(second.touchedPaths, [note], 'active notes merge without a resume chain');
+    const raw = fs.readFileSync(note, 'utf8');
+    assert.match(raw, /Second answer/);
+    assert.equal(parseFrontmatter(raw).fields.prompt_count, 2);
+    // An append while capture is reading/writing must not be hidden by a newer
+    // note mtime: the cache commits the fingerprint from before the read.
+    const duringCapture = sweepCodex({ home, vaultRoot, checkpoint: true, now: later.getTime() + 2,
+      capture: (options) => {
+        const result = captureCodex(options);
+        fs.appendFileSync(file, JSON.stringify(message('user', 'Appended during capture.', at(5))) + '\n');
+        return result;
+      } });
+    saveCodexCheckpoints({ stateDir: path.join(home, '.harness'), vaultRoot, checkpoints: duringCapture.checkpoints });
+    const afterAppend = sweepCodex({ home, vaultRoot, capture: captureCodex, checkpoint: true,
+      now: later.getTime() + 3 });
+    assert.equal(afterAppend.eligible, 1, 'the next pass sees a concurrent append');
+    assert.equal(parseFrontmatter(fs.readFileSync(note, 'utf8')).fields.prompt_count, 3);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('SessionEnd finds omitted and archived transcript paths by matching session metadata', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-resolve-'));
+  try {
+    const id = randomUUID();
+    const directory = path.join(home, '.codex', 'archived_sessions');
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, `rollout-${id}.jsonl`);
+    fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id } }) + '\n');
+    assert.equal(resolveCodexTranscript({ sessionId: id, home }), file);
+    assert.equal(resolveCodexTranscript({ sessionId: id, declaredPath: path.join(home, 'gone.jsonl'), home }), file);
+    assert.equal(resolveCodexTranscript({ sessionId: randomUUID(), home }), '');
+    fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id: randomUUID() } }) + '\n');
+    assert.equal(resolveCodexTranscript({ sessionId: id, home }), '', 'filename alone cannot select another chat');
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

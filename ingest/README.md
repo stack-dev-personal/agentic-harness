@@ -267,7 +267,11 @@ default** and refuses to run unless the sweep can be trusted:
   most of the corpus;
 * any document failed — the seen set is incomplete;
 * the loader produced nothing — a mistyped path or an unmounted OneDrive folder
-  would otherwise wipe the source.
+  would otherwise wipe the source;
+* `HARNESS_MACHINE` is unset — a row whose note names another machine
+  (`machine:` in its frontmatter) is that machine's to sweep, so the sweep has to
+  know which machine it is. Two clones of one realm that have not synced yet
+  must not delete each other's sessions.
 
 Each guard prints why it declined. `--prune --dry-run` lists exactly what would
 be deleted without touching anything. `rag.chunks` cascades from

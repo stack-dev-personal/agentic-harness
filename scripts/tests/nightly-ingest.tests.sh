@@ -78,7 +78,7 @@ run_nightly() {
   LOG_FILE="$SCRATCH/$name.log"
   (
     unset REALM_SYNC TRANSCRIPT_IDLE_HOURS STALE_AFTER_HOURS STORE_VERIFY RETRIEVAL_EVAL \
-      FAKE_INGEST_CODE FAKE_VERIFY_CODE FAKE_EVAL_CODE
+      FAKE_INGEST_CODE FAKE_VERIFY_CODE FAKE_EVAL_CODE HARNESS_INGEST_PRUNE
     export HARNESS_MACHINE_ENV="$SCRATCH/absent.env"
     export HARNESS_VAULT="$VAULT_DIR" HARNESS_INGEST_PROJECT="$PROJECT_DIR" HARNESS_HOOKS_DIR="$HOOKS_DIR"
     export HARNESS_UV="$FAKE_BIN/uv" HARNESS_NODE="$FAKE_BIN/node" HARNESS_NIGHTLY_LOG="$LOG_FILE"
@@ -118,6 +118,7 @@ check "lib/machine-env.sh and .ps1 list the same settings" same_settings
 
 # (2) a clean night: verify and eval after the ingest, before the realm push.
 run_nightly clean
+check "pruning is disabled without explicit opt-in" log_lacks " --prune"
 check "a clean night exits 0 (exit $run_code)" exit_is 0
 check "verify is called with the vault path" log_has "run ingest verify --path $VAULT_DIR"
 check "eval is called with --history" log_has "run ingest eval --history"
@@ -125,6 +126,8 @@ check "verify's own output reaches the log" log_has "verify | verify: clean"
 check "the order is ingest, verify, eval, realms-push" in_order "ingest : exit" "verify : exit" "eval : exit" "realms-push : exit"
 check "the summary line reports verify and eval after ingest" log_has "ingest 0, verify 0, eval 0, realms-push 0) ==="
 check "a clean night logs no \"ended with\"" log_lacks "ended with"
+run_nightly prune-opt-in HARNESS_INGEST_PRUNE=1
+check "pruning requires explicit opt-in" log_has " --prune"
 
 # (3) failures are logged and the exit code is still the ingest's.
 run_nightly steps-fail FAKE_VERIFY_CODE=1 FAKE_EVAL_CODE=2

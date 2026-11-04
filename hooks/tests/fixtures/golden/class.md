@@ -51,6 +51,7 @@ retrievals: []
 retrieved: []
 hook_tags:
   - 'docs'
+runtime: 'claude-code'
 ---
 
 # 2026-09-14 · ist323 · Outline the IST 323 threat-modelling assignment

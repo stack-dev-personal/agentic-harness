@@ -1,0 +1,4 @@
+name: harness-memory
+kind: memory-provider
+version: 1.0.0
+description: "Shared agentic-harness capture and recall through the existing memory pipeline."

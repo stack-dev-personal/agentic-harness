@@ -4,8 +4,8 @@ Per collection (``<realm-folder>/<collection>/``): main sessions in date order
 with their subagents nested beneath, notes/ and decisions/ notes, the plan
 sources from the hub profile, and optional git facts. Read-only.
 
-Unlike the RAG loader, the inventory keeps ``origin: sdk-*`` session notes: they
-are the review workers' notes, and they hold the findings the ledger needs.
+The inventory keeps ``origin: sdk-*`` session notes as ordinary provenance;
+the origin never establishes whether a session is eligible for memory.
 
 What it leaves out, each with a reason and never silently:
 

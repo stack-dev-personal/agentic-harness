@@ -107,6 +107,7 @@ export function buildFields(ctx) {
     supersedes: ctx.supersedes ?? [],
     resumed_from: ctx.resumedFrom ?? '',
     parent_session: ctx.parentSession,
+    ...(ctx.ancestorSessions?.length ? { ancestor_sessions: ctx.ancestorSessions } : {}),
     child_sessions: ctx.childSessions,
     commits: ctx.commits,
     prs: ctx.prs,
@@ -118,6 +119,8 @@ export function buildFields(ctx) {
     prompt_count: ctx.prompts.length,
     command_count: ctx.commandCount,
     agent: ctx.agent ?? 'claude-code',
+    ...Object.fromEntries(['runtime', 'provider', 'model', 'purpose', 'classification', 'data_classification', 'memory_excluded']
+      .filter(key => ctx[key] !== undefined && ctx[key] !== '').map(key => [key, typeof ctx[key] === 'string' ? redact(ctx[key]).slice(0, 200) : ctx[key]])),
     agent_type: ctx.agentType ?? '',
     origin: ctx.origin ?? '',
     captured_by: ctx.capturedBy ?? CAPTURED_BY_HOOK,

@@ -53,6 +53,7 @@ retrievals: []
 retrieved: []
 hook_tags:
   - 'ingest'
+runtime: 'claude-code'
 ---
 
 # 2026-09-12 · agentic-harness · Here is the connection string, use

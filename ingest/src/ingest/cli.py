@@ -37,16 +37,18 @@ from .curate.cli import SUBCOMMAND as CURATE_SUBCOMMAND, run_curate
 from .config import (
     CHUNKING,
     EMBEDDING,
+    ENV_MACHINE,
     ENV_REALMS,
     SOURCE_CLAUDE_MEM,
     SOURCE_OBSIDIAN,
     load_db_settings,
+    machine_name,
     parse_realm_policies,
 )
 from .embed_check import SUBCOMMAND as EMBED_CHECK_SUBCOMMAND, run_embed_check
 from .embedding import FastEmbedEmbedder
 from .envfile import load_env_file
-from .errors import IngestError
+from .errors import ConfigError, IngestError
 from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
@@ -54,6 +56,7 @@ from .prune import PruneResult, prune_orphans
 from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
+from .session_content import require_memory_enabled
 from .sweep_cli import SUBCOMMAND as SWEEP_SUBCOMMAND, run_sweep
 from .tokenizer import HeuristicTokenCounter, model_token_counter, tokenizer_from_embedder
 from .verify_cli import SUBCOMMAND as VERIFY_SUBCOMMAND, run_verify
@@ -126,7 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="DESTRUCTIVE: after a full pass, delete documents of this source "
         "whose external_id was not produced by the loader. Off by default; "
         "refused after --limit or any failure. Scoped to the realms this run "
-        "walked; a realm not on this machine is never touched.",
+        "walked and to this machine (HARNESS_MACHINE): a realm not on this "
+        "machine, or a row whose note another machine captured, is never touched.",
     )
     parser.add_argument(
         "--prune-legacy",
@@ -157,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        require_memory_enabled()
+    except IngestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] in SUBCOMMANDS:
         return SUBCOMMANDS[arguments[0]](arguments[1:])
@@ -170,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         load_env_file(Path(args.env_file) if args.env_file else None)
+        require_memory_enabled()
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -226,6 +236,20 @@ def _run(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit < 1:
         print("error: --limit must be >= 1", file=sys.stderr)
         return 2
+    try:
+        machine = machine_name()
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if (args.prune or args.prune_legacy) and machine is None:
+        # Without a machine name the sweep cannot tell its own rows from those of
+        # another clone of the same realm, and would delete that machine's sessions.
+        print(
+            f"error: --prune needs {ENV_MACHINE} (set in ~/.harness/machine.env): the sweep "
+            "keeps rows another machine captured, so it has to know which machine this is",
+            file=sys.stderr,
+        )
+        return 2
 
     store, embedder, chunker = _build_components(args)
     prune_results: list[PruneResult] = []
@@ -249,7 +273,7 @@ def _run(args: argparse.Namespace) -> int:
         stats = pipeline.run(documents)
 
         if args.prune or args.prune_legacy:
-            prune_results = _sweep(args, store, documents, stats, written_before)
+            prune_results = _sweep(args, store, documents, stats, written_before, machine)
     finally:
         store.close()
 
@@ -262,7 +286,12 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _sweep(
-    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats, written_before: datetime | None
+    args: argparse.Namespace,
+    store: ChunkStore,
+    documents,
+    stats: IngestStats,
+    written_before: datetime | None,
+    machine: str,
 ) -> list[PruneResult]:
     """One orphan sweep per realm the run walked, plus the legacy rows on request.
 
@@ -288,6 +317,7 @@ def _sweep(
         failure_count=len(stats.failures),
         limited=args.limit is not None,
         written_before=written_before,
+        machine=machine,
     )
     results = []
     if args.prune:

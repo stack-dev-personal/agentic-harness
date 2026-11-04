@@ -55,6 +55,7 @@ retrieved: []
 hook_tags:
   - 'harness'
   - 'validation'
+runtime: 'claude-code'
 ---
 
 # 2026-09-15 · agentic-harness · You are W-H1. Build the hook

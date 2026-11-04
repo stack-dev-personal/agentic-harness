@@ -74,7 +74,7 @@ function loadEnvironment() {
 }
 
 /** The scripts settings.json runs. Everything else deployed is what these import. */
-const ENTRY_POINTS = Object.freeze(['session-capture.mjs', 'session-start.mjs']);
+const ENTRY_POINTS = Object.freeze(['session-capture.mjs', 'session-start.mjs', 'memory-worker.mjs']);
 
 /** A static `import … from './x.mjs'`, `import './x.mjs'` or `export … from './x.mjs'` at a line start. */
 const STATIC_IMPORT = /(?:^|\n)\s*(?:import|export)\s+(?:[\s\S]*?\sfrom\s+)?['"](\.[^'"]+)['"]/g;

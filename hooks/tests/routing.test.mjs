@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { canonicalFixturePath } from './helpers/fixture-path.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -40,7 +41,7 @@ function makeWorktree(root, mainGitDir, dir) {
 }
 
 function world({ harnessRealm = true } = {}) {
-  const root = toPosix(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'routing-'))));
+  const root = toPosix(canonicalFixturePath(fs.mkdtempSync(path.join(os.tmpdir(), 'routing-'))));
   const home = `${root}/home`;
   const tmp = `${root}/tmp`;
   const vault = `${home}/vault`;

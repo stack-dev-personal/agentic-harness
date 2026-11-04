@@ -24,7 +24,7 @@ import test from 'node:test';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = path.resolve(HERE, '..');
 const INSTALLER = path.join(HOOKS_DIR, 'install.mjs');
-const ENTRY_POINTS = Object.freeze(['session-capture.mjs', 'session-start.mjs']);
+const ENTRY_POINTS = Object.freeze(['session-capture.mjs', 'session-start.mjs', 'memory-worker.mjs']);
 const FAKE_NODE = 'C:/Program Files/nodejs/node.exe';
 
 function scratch() {
@@ -48,6 +48,7 @@ function payloadPaths() {
 }
 
 const RELATIVE_IMPORT = /(?:^|\n)\s*(?:import|export)\s+(?:[\s\S]*?\sfrom\s+)?['"](\.[^'"]+)['"]/g;
+const DYNAMIC_IMPORT = /\bimport\(\s*['"](\.[^'"]+)['"]\s*\)/g;
 
 /**
  * Every module the entry points reach, transitively.
@@ -66,7 +67,7 @@ function runtimeClosure(entries = ENTRY_POINTS) {
     seen.add(relative);
 
     const source = fs.readFileSync(path.join(HOOKS_DIR, relative), 'utf8');
-    for (const match of source.matchAll(RELATIVE_IMPORT)) {
+    for (const match of [...source.matchAll(RELATIVE_IMPORT), ...source.matchAll(DYNAMIC_IMPORT)]) {
       const resolved = path
         .relative(HOOKS_DIR, path.resolve(path.dirname(path.join(HOOKS_DIR, relative)), match[1]))
         .replace(/\\/g, '/');

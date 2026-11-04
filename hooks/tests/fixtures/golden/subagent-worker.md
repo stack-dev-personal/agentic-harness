@@ -61,6 +61,7 @@ hook_tags:
   - 'gui'
   - 'retrieval'
   - 'validation'
+runtime: 'claude-code'
 ---
 
 # 2026-09-16 · bb2dash · general-purpose · Add the superseded-file filter to the

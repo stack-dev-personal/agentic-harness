@@ -329,7 +329,8 @@ function main() {
   });
   if (!outcome.written) return log(`${outcome.action}: ${outcome.skip} ms=${Date.now() - startedAt}`);
   if (Date.now() < deadlineAt) {
-    if (process.platform === 'win32') queueCodexIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
+    if (process.platform === 'darwin') queueCodexIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log, startTask: false });
+    else if (process.platform === 'win32') queueCodexIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
     else enqueueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
   }
   log(`${outcome.action}: ${outcome.detail} ms=${Date.now() - startedAt}`);

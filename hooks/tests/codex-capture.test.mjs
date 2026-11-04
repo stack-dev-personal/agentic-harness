@@ -23,6 +23,37 @@ const message = (role, text, timestamp, phase) => ({
     content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] },
 });
 
+test('macOS SessionEnd queues notes for launchd without a detached ingest', { skip: process.platform !== 'darwin' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-mac-queue-'));
+  try {
+    const vaultRoot = path.join(root, 'vault');
+    const cwd = path.join(root, 'demo');
+    fs.mkdirSync(path.join(vaultRoot, 'projects', 'demo', 'sessions'), { recursive: true });
+    fs.mkdirSync(cwd);
+    const sessionId = randomUUID();
+    const transcriptPath = path.join(root, 'rollout.jsonl');
+    fs.writeFileSync(transcriptPath, [
+      { timestamp: at(0), type: 'session_meta', payload: { cwd } },
+      message('user', 'Capture the macOS session.', at(1)),
+      message('assistant', 'Session captured.', at(2), 'final_answer'),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../codex-session-capture.mjs', import.meta.url))], {
+      input: JSON.stringify({ session_id: sessionId, transcript_path: transcriptPath,
+        cwd, hook_event_name: 'SessionEnd', reason: 'other' }),
+      encoding: 'utf8', timeout: 3000,
+      env: { ...process.env, HOME: root, USERPROFILE: root, HARNESS_MACHINE_ENV: path.join(root, 'missing.env'),
+        HARNESS_VAULT: vaultRoot, HARNESS_INGEST_ON_CAPTURE: '1',
+        HARNESS_CODEX_CAPTURE_LOG: path.join(root, 'capture.log') },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const queued = fs.readFileSync(path.join(root, '.harness', 'codex-ingest-queue.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(queued.includes(path.join(vaultRoot, 'projects', 'demo', 'sessions', `codex-${sessionId}.md`)));
+    assert.ok(!fs.existsSync(path.join(root, '.claude', 'hooks', 'ingest-on-capture.log')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Codex parsing keeps human prompts and final answers, not machine context or tool output', () => {
   const records = [
     message('user', '<environment_context>private machine data</environment_context>', at(1)),

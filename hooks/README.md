@@ -50,6 +50,20 @@ that sweep because their user-role blocks contain inherited parent context.
 Logs are in
 `~/.codex/hooks/session-capture.log` and `ingest-queue.log`.
 
+On macOS, run `python3 scripts/register-codex-ingest-macos.py --apply` from
+the repository root. It installs a user LaunchAgent that drains the queue every
+five minutes while logged in, including after login. Each run also snapshots
+changed local desktop and terminal Codex transcripts, including open chats.
+Snapshots remain active; SessionEnd still records closure. A persistent file
+stamp skips unchanged transcripts, and failed indexing remains queued for retry.
+This cadence does not require the chat-close hook to fire. Capture only queues notes
+on macOS, so indexing does not depend on a detached hook child surviving chat
+shutdown. The worker also runs the existing daily recovery sweep of main chats
+idle for six hours. It does not synchronize Git realms or prune the database.
+Run the installer without `--apply` to inspect the generated configuration.
+The Node path is pinned to the installed version; rerun after removing that
+Node version or moving the checkout.
+
 ```
 hooks/
 ├── session-capture.mjs     the SessionEnd hook: stdin in, one note out

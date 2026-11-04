@@ -11,6 +11,7 @@ import path from 'node:path';
 import { captureCodex } from './codex-session-capture.mjs';
 import { drainCodexIngest, queueCodexIngest } from './lib/codex-ingest-queue.mjs';
 import { sweepCodex } from './lib/codex-sweep.mjs';
+import { captureChangedCodex } from './lib/codex-cadence.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
@@ -34,6 +35,12 @@ function main(log) {
   installExtraRulesFrom(process.env, log);
   const vaultRoot = process.env.HARNESS_VAULT || path.join(os.homedir(), 'vault');
   let failedFiles = drain(log);
+  if (process.env.HARNESS_CODEX_CADENCE === '1') {
+    const cadence = captureChangedCodex({ vaultRoot, capture: captureCodex, queue: queueCodexIngest, log });
+    log(`cadence: ${JSON.stringify(cadence)}`);
+    failedFiles = drain(log);
+    if (cadence.errors) process.exitCode = 1;
+  }
   const sweep = sweepCodex({ vaultRoot, capture: captureCodex, log });
   if (sweep.due) log(sweepSummary(sweep));
   if (sweep.touchedPaths.length) {

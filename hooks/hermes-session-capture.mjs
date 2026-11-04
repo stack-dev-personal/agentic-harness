@@ -2,8 +2,8 @@
 /** Hermes native-format adapter. Shared capture owns memory policy and rendering. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import * as captureModule from './lib/capture.mjs';
+import { openNativeDatabase, textFromColumn } from './lib/native-sqlite.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { isSafeFilenameSegment } from './lib/text.mjs';
 import { memoryEligibility } from './lib/memory-policy.mjs';
@@ -29,6 +29,8 @@ function textContent(content) {
 
 /** Hermes SessionDB sentinel encoding, reduced to text before recovery snapshots. */
 function nativeTextContent(content) {
+  // Message bodies are selected as bytes (see the queries below) and decoded here.
+  if (content instanceof Uint8Array) content = textFromColumn(content);
   if (typeof content === 'string' && content.startsWith('\u0000json:')) {
     try { content = JSON.parse(content.slice(6)); }
     catch { throw new Error('Hermes native message encoding is invalid'); }
@@ -190,7 +192,7 @@ export function discoverHermesSessions({ hermesHome, log = () => {} }) {
   if (!fs.existsSync(database)) return [];
   const registered = readHermesRegistry(hermesHome);
   if (!Object.keys(registered).length) return [];
-  const db = new DatabaseSync(database, { readOnly: true });
+  const db = openNativeDatabase(database, { readOnly: true });
   try {
     const { columns, get } = nativeSessionLookup(db);
     const children = columns.has('source') ? db.prepare("SELECT id FROM sessions WHERE parent_session_id = ? AND source = 'subagent' AND started_at >= ?") : null;
@@ -225,7 +227,7 @@ export function readHermesSession({ hermesHome, sessionId, env = process.env }) 
   if (!isSafeFilenameSegment(nativeId)) throw new Error('invalid Hermes session id');
   const registry = readHermesRegistry(hermesHome);
   const database = path.join(hermesHome, 'state.db');
-  const db = new DatabaseSync(database, { readOnly: true });
+  const db = openNativeDatabase(database, { readOnly: true });
   try {
     const { get } = nativeSessionLookup(db);
     const session = get(nativeId);
@@ -249,11 +251,13 @@ export function readHermesSession({ hermesHome, sessionId, env = process.env }) 
     const predicate = `session_id = ? AND role IN ('user','assistant')${filters.length ? ` AND ${filters.join(' AND ')}` : ''}`;
     let task = '';
     if (session.parent_session_id && session.source === 'subagent') {
-      const assignment = db.prepare(`SELECT content FROM messages WHERE ${predicate} AND role = 'user' ORDER BY id LIMIT 1`).get(nativeId);
+      // `content` is read as bytes: Node 22's node:sqlite cuts a text value at the
+      // NUL that starts Hermes's multimodal encoding, which emptied every such message.
+      const assignment = db.prepare(`SELECT CAST(content AS BLOB) AS content FROM messages WHERE ${predicate} AND role = 'user' ORDER BY id LIMIT 1`).get(nativeId);
       task = nativeTextContent(assignment?.content);
       if (!task) throw new Error('Hermes delegated assignment is not yet available for recovery');
     }
-    const rows = db.prepare(`SELECT role, content, tool_calls, timestamp FROM messages WHERE ${predicate} ORDER BY id DESC LIMIT ?`).all(nativeId, MAX_MESSAGES).reverse();
+    const rows = db.prepare(`SELECT role, CAST(content AS BLOB) AS content, tool_calls, timestamp FROM messages WHERE ${predicate} ORDER BY id DESC LIMIT ?`).all(nativeId, MAX_MESSAGES).reverse();
     const messages = rows.map(row => { let tool_calls; try { tool_calls = JSON.parse(row.tool_calls || '[]'); } catch { tool_calls = []; }
       return { role: row.role, content: nativeTextContent(row.content), timestamp: row.timestamp, tool_calls }; });
     const snapshot = { ...registration, session_id: nativeId, cwd: input.cwd, model: session.model,

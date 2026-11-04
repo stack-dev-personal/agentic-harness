@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { checkpointSessions, saveMemoryCheckpoints } from '../lib/memory-checkpoints.mjs';
+import { UNSUPPORTED_GENERATION, checkpointSessions, saveMemoryCheckpoints } from '../lib/memory-checkpoints.mjs';
 
 function outcome(action, skip) {
   return { written: false, action, skip, notePath: '', touchedPaths: [] };
@@ -45,7 +45,7 @@ test('an unsupported capture is tallied apart from errors and exclusions', () =>
     assert.equal(result.errors, 1, 'an unreadable history is still a failure');
     assert.equal(result.excluded, 1);
     assert.equal(result.written, 0);
-    assert.deepEqual(result.checkpoints, { 'codex:codex-child': { fingerprint: 'a', paths: [], unsupported: true } },
+    assert.deepEqual(result.checkpoints, { 'codex:codex-child': { fingerprint: 'a', paths: [], unsupported: true, generation: UNSUPPORTED_GENERATION } },
       'the unsupported thread is remembered at its native revision; the failure is retried');
   } finally {
     s.cleanup();
@@ -76,6 +76,26 @@ test('a remembered unsupported thread is counted without reopening its history',
     assert.equal(captured, 1);
     assert.equal(changed.unsupported, 1);
     assert.equal(changed.checkpoints['codex:codex-child'].fingerprint, 'a2');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('an unsupported verdict from an older generation is looked at again once', () => {
+  const s = sandbox();
+  try {
+    // Remembered before the adapter learned to write these threads: no generation.
+    saveMemoryCheckpoints({ stateDir: s.stateDir, vaultRoot: s.vaultRoot,
+      checkpoints: { 'codex:codex-child': { fingerprint: 'a', paths: [], unsupported: true } } });
+    let captured = 0;
+    const note = path.join(s.vaultRoot, 'codex-child.md');
+    const result = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [
+      { runtime: 'codex', sessionId: 'codex-child', fingerprint: 'a', capture: () => { captured += 1; fs.writeFileSync(note, '# note\n'); return { written: true, action: 'create', skip: '', notePath: note, touchedPaths: [note] }; } },
+    ] });
+    assert.equal(captured, 1, 'the same native revision is re-evaluated under the new rules');
+    assert.equal(result.written, 1);
+    assert.equal(result.unsupported, 0);
+    assert.deepEqual(result.checkpoints['codex:codex-child'].paths, [note]);
   } finally {
     s.cleanup();
   }

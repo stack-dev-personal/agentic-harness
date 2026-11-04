@@ -4,6 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { persist } from './notes-io.mjs';
 
+/**
+ * Bumped whenever an adapter learns to write a thread it used to report as
+ * unsupported. A remembered verdict from an older generation is looked at again
+ * once; one from the current generation is trusted until the native revision
+ * changes. Generation 2: Codex delegated threads without a recorded assignment
+ * are written (2026-11-04).
+ */
+export const UNSUPPORTED_GENERATION = 2;
+
 function readState(stateDir, vaultRoot) {
   try {
     const state = JSON.parse(fs.readFileSync(path.join(stateDir, 'memory-checkpoints.json'), 'utf8'));
@@ -31,7 +40,7 @@ export function checkpointSessions({ candidates, vaultRoot, stateDir = path.join
     if (previous?.fingerprint === candidate.fingerprint) {
       // An unsupported thread is remembered at its native revision: the same
       // history gives the same answer, so it is counted without being reopened.
-      if (previous.unsupported) { result.unsupported += 1; continue; }
+      if (previous.unsupported && previous.generation === UNSUPPORTED_GENERATION) { result.unsupported += 1; continue; }
       if (previous.paths?.length && previous.paths.every(file => fs.existsSync(file))) continue;
     }
     result.eligible += 1;
@@ -39,10 +48,10 @@ export function checkpointSessions({ candidates, vaultRoot, stateDir = path.join
       const outcome = candidate.capture({ deadlineAt: Math.min(deadline, clock() + 30_000) });
       if (outcome.action === 'excluded') { result.excluded += 1; continue; }
       // A runtime that cannot supply what a note needs (a delegated Codex thread
-      // without its recorded assignment) is reported, not retried as a failure.
+      // with no resolvable parent) is reported, not retried as a failure.
       if (outcome.action === 'unsupported') {
         result.unsupported += 1;
-        result.checkpoints[key] = { fingerprint: candidate.fingerprint, paths: [], unsupported: true };
+        result.checkpoints[key] = { fingerprint: candidate.fingerprint, paths: [], unsupported: true, generation: UNSUPPORTED_GENERATION };
         continue;
       }
       if (outcome.action === 'deferred') { result.deferred += 1; continue; }

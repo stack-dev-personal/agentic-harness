@@ -155,24 +155,35 @@ test('SQLite child capture uses parent assignment and never inherited child user
     assert.equal(fields.parent_session, 'codex-parent');
     assert.equal(fields.prompt_count, 1);
     assert.match(raw, /Verify the shared storage implementation/);
+    assert.doesNotMatch(raw, /assignment not recorded/, 'a recorded assignment is never replaced by the placeholder');
     assert.ok(!raw.includes('Record the shared database decision'));
   } finally { f.close(); }
 });
 
-test('SQLite child missing its own task fails closed and logs a capability gap', () => {
+test('a child whose assignment Codex did not record is written with a placeholder task and no inherited user items', () => {
   const f = fixture();
   try {
-    mainItems(f, 'parent'); f.thread('child'); f.turn('child');
+    mainItems(f, 'parent');
+    f.thread('child', { source: JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/root/verify_storage', agent_nickname: 'Bohr' } } }) });
+    f.turn('child');
     f.state.prepare("INSERT INTO thread_spawn_edges VALUES ('parent','child','completed')").run();
     f.item('child', { type: 'userMessage', content: [{ type: 'text', text: 'INHERITED-PARENT-TEXT' }] }, 9);
+    f.item('child', { type: 'agentMessage', text: 'Storage verified by the delegate.', phase: 'final_answer' }, 10);
     const messages = [];
     const candidate = discoverCodexSqliteSessions({ ...f.options, log: m => messages.push(m) }).find(c => c.nativeSessionId === 'child');
     const outcome = candidate.capture({ deadlineAt: Date.now() + 3000 });
-    assert.equal(outcome.written, false);
-    assert.equal(outcome.action, 'unsupported', 'not a failure: the assignment is not in native history');
-    assert.match(outcome.skip, /child task unavailable/);
-    assert.ok(messages.some(m => /child task unavailable/.test(m)));
-    assert.deepEqual(fs.readdirSync(f.vaultRoot), []);
+    assert.equal(outcome.written, true, outcome.skip);
+    const raw = fs.readFileSync(outcome.notePath, 'utf8');
+    const fields = parseFrontmatter(raw).fields;
+    assert.equal(fields.parent_session, 'codex-parent');
+    assert.equal(fields.prompt_count, 1);
+    assert.match(fields.title, /Delegated Codex task verify_storage/);
+    assert.match(raw, /Delegated Codex task verify_storage: assignment not recorded by Codex/);
+    assert.match(raw, /Storage verified by the delegate/);
+    assert.ok(!raw.includes('INHERITED-PARENT-TEXT'), 'inherited user items are never exported');
+    assert.ok(!raw.includes('Record the shared database decision'), 'the parent prompt is never exported');
+    assert.ok(!messages.some(m => /child task unavailable/.test(m)));
+    assert.ok(messages.some(m => /placeholder task/.test(m)), 'the fallback is logged so a detection regression stays visible');
   } finally { f.close(); }
 });
 
@@ -194,7 +205,7 @@ test('unknown subagent source without verifiable parent task never reads inherit
     const candidate = discoverCodexSqliteSessions(f.options)[0];
     const outcome = candidate.capture({ deadlineAt: Date.now() + 3000 });
     assert.equal(outcome.written, false);
-    assert.equal(outcome.action, 'unsupported', 'not a failure: the assignment is not in native history');
+    assert.equal(outcome.action, 'unsupported', 'not a failure: no parent thread to belong to');
     assert.match(outcome.skip, /child task unavailable/);
   } finally { f.close(); }
 });
@@ -446,5 +457,56 @@ test('an extended-length native cwd is normalized before the path policy and the
     const env = { ...f.env, HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([f.cwd]) };
     const excluded = captureCodexSqliteSession({ ...f.options, env, sessionId: 'main', deadlineAt: Date.now() + 3000 });
     assert.equal(excluded.action, 'excluded');
+  } finally { f.close(); }
+});
+
+test('a spawn edge without a delegated source or a recorded assignment is unsupported, not mislabelled', () => {
+  const f = fixture();
+  try {
+    mainItems(f, 'parent'); f.thread('forked'); f.turn('forked');
+    f.state.prepare("INSERT INTO thread_spawn_edges VALUES ('parent','forked','completed')").run();
+    f.item('forked', { type: 'userMessage', content: [{ type: 'text', text: 'A prompt typed into the forked chat.' }] }, 9);
+    f.item('forked', { type: 'agentMessage', text: 'Forked answer.', phase: 'final_answer' }, 10);
+    const messages = [];
+    const outcome = captureCodexSqliteSession({ ...f.options, log: m => messages.push(m), sessionId: 'forked', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, false);
+    assert.equal(outcome.action, 'unsupported');
+    assert.ok(messages.some(m => /spawn edge without a delegated source/.test(m)));
+    assert.deepEqual(fs.readdirSync(f.vaultRoot), []);
+  } finally { f.close(); }
+});
+
+test('a delegate with no activity of its own is skipped as trivial, not written as a placeholder', () => {
+  const f = fixture();
+  try {
+    mainItems(f, 'parent');
+    f.thread('idle', { source: JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/root/idle' } } }) });
+    f.turn('idle');
+    f.state.prepare("INSERT INTO thread_spawn_edges VALUES ('parent','idle','completed')").run();
+    f.item('idle', { type: 'userMessage', content: [{ type: 'text', text: 'INHERITED' }] }, 9);
+    const outcome = captureCodexSqliteSession({ ...f.options, sessionId: 'idle', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, false);
+    assert.match(outcome.skip, /subagent did nothing/);
+    assert.deepEqual(fs.readdirSync(f.vaultRoot), []);
+  } finally { f.close(); }
+});
+
+test('a delegate is looked at again when its parent records a collab item', () => {
+  const f = fixture();
+  try {
+    mainItems(f, 'parent');
+    f.thread('child', { source: JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/root/late' } } }) });
+    f.turn('child');
+    f.state.prepare("INSERT INTO thread_spawn_edges VALUES ('parent','child','completed')").run();
+    f.item('child', { type: 'agentMessage', text: 'Late answer.', phase: 'final_answer' }, 9);
+    const before = discoverCodexSqliteSessions(f.options).find(c => c.nativeSessionId === 'child').fingerprint;
+    f.item('parent', { type: 'collabAgentToolCall', tool: 'spawnAgent', prompt: 'The late-arriving assignment.', receiverThreadIds: ['child'] }, 10);
+    const after = discoverCodexSqliteSessions(f.options).find(c => c.nativeSessionId === 'child').fingerprint;
+    assert.notEqual(after, before, "the parent's spawn record is part of the child's revision");
+    const outcome = captureCodexSqliteSession({ ...f.options, sessionId: 'child', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, true, outcome.skip);
+    const raw = fs.readFileSync(outcome.notePath, 'utf8');
+    assert.match(raw, /The late-arriving assignment/);
+    assert.doesNotMatch(raw, /assignment not recorded/);
   } finally { f.close(); }
 });

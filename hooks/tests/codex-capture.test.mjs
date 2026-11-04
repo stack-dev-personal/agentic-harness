@@ -196,12 +196,15 @@ test('Codex ingest queue hands a vault note to a scheduled task and drains it', 
       HARNESS_INGEST_PROJECT: project, HARNESS_UV_BIN: uv };
     const calls = [];
     const fakeRun = (command, args) => { calls.push({ command, args }); return { status: 0 }; };
-    const queued = queueCodexIngest({ notePaths: [note], vaultRoot, env, run: fakeRun });
+    // Only Windows hands the queue to a scheduled task; elsewhere the shared queue
+    // would start the worker itself, which a unit test must not do.
+    const onWindows = process.platform === 'win32';
+    const queued = queueCodexIngest({ notePaths: [note], vaultRoot, env, run: fakeRun, startTask: onWindows });
     assert.equal(queued.queued, true);
-    assert.ok(calls[0].args.includes(TASK_NAME));
+    if (onWindows) assert.ok(calls[0].args.includes(TASK_NAME));
     const drained = drainCodexIngest({ env, run: fakeRun });
     assert.equal(drained.ingested, 1);
-    assert.ok(calls[1].args.includes(note));
+    assert.ok(calls[onWindows ? 1 : 0].args.includes(note));
     assert.equal(drainCodexIngest({ env, run: fakeRun }).ingested, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

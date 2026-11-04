@@ -6,9 +6,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import { captureSession } from './capture.mjs';
+import { openNativeDatabase } from './native-sqlite.mjs';
 import { sessionMemoryEligibility } from './memory-policy.mjs';
 import { parseRagResult } from './rag-result.mjs';
 import { isSafeFilenameSegment, toPosix } from './text.mjs';
@@ -48,7 +48,6 @@ const PATH_SQL = `WITH items AS (
   UNION ALL SELECT argument.value,? FROM items,json_tree(items.item_json,'$.arguments') argument
   WHERE item_type='mcpToolCall' AND argument.key IN ('path','file_path','notebook_path') AND argument.type <> 'null'
 ) SELECT path,cwd FROM paths WHERE path IS NOT NULL AND path <> '' LIMIT ?`;
-const openNativeDatabase = (file, options) => new DatabaseSync(file, options);
 const nativeId = id => String(id || '').replace(/^codex-/, '');
 const qualify = id => `codex-${nativeId(id)}`;
 const millis = value => Number(value || 0) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);

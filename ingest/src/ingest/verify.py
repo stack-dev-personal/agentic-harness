@@ -177,8 +177,13 @@ class StoreReader(Protocol):
 
     def chunk_texts(self) -> Sequence[ChunkText]: ...
 
-    def vault_rows(self, realm: str | None) -> Sequence[VaultRow]:
-        """Obsidian rows of ``realm``; ``None`` means the legacy rows with no realm."""
+    def vault_rows(self, realm: str | None, machine: str | None = None) -> Sequence[VaultRow]:
+        """Obsidian rows of ``realm``; ``None`` means the legacy rows with no realm.
+
+        ``machine`` narrows them to the rows this machine may sweep (see
+        ``prune.owned_by``), so the audit never reports another machine's
+        unsynced sessions as orphans the sweep would then refuse to delete.
+        """
         ...
 
     def chunk_ids(self) -> Sequence[int]: ...

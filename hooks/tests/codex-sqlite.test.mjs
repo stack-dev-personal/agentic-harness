@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { discoverCodexSqliteSessions, captureCodexSqliteSession } from '../lib/codex-sqlite.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
+import { toPosix } from '../lib/text.mjs';
 
 const NOW = Date.UTC(2026, 10, 3, 18);
 
@@ -28,7 +29,7 @@ function fixture() {
     status TEXT, started_at INTEGER, completed_at INTEGER);`);
   const env = { USERPROFILE: home, HARNESS_MEMORY_STATE_DIR: path.join(home, 'state') };
   function thread(id = 'main', extra = {}) {
-    state.prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, path.join(native, 'old-rollout.jsonl'), cwd,
+    state.prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, path.join(native, 'old-rollout.jsonl'), extra.cwd ?? cwd,
       extra.source || 'vscode', 'provider-test', 'model-test', NOW - 60000, extra.updatedAt ?? NOW,
       extra.historyMode || 'paginated', 0, 'Codex Desktop');
   }
@@ -168,6 +169,7 @@ test('SQLite child missing its own task fails closed and logs a capability gap',
     const candidate = discoverCodexSqliteSessions({ ...f.options, log: m => messages.push(m) }).find(c => c.nativeSessionId === 'child');
     const outcome = candidate.capture({ deadlineAt: Date.now() + 3000 });
     assert.equal(outcome.written, false);
+    assert.equal(outcome.action, 'unsupported', 'not a failure: the assignment is not in native history');
     assert.match(outcome.skip, /child task unavailable/);
     assert.ok(messages.some(m => /child task unavailable/.test(m)));
     assert.deepEqual(fs.readdirSync(f.vaultRoot), []);
@@ -192,6 +194,7 @@ test('unknown subagent source without verifiable parent task never reads inherit
     const candidate = discoverCodexSqliteSessions(f.options)[0];
     const outcome = candidate.capture({ deadlineAt: Date.now() + 3000 });
     assert.equal(outcome.written, false);
+    assert.equal(outcome.action, 'unsupported', 'not a failure: the assignment is not in native history');
     assert.match(outcome.skip, /child task unavailable/);
   } finally { f.close(); }
 });
@@ -421,5 +424,27 @@ test('child own-thread path preflight does not inspect inherited userMessage ima
     const result = captureCodexSqliteSession({ ...f.options, sessionId: 'child', deadlineAt: Date.now() + 3000 });
     assert.equal(result.written, true);
     assert.match(fs.readFileSync(result.notePath, 'utf8'), /Public files verified/);
+  } finally { f.close(); }
+});
+
+test('an extended-length native cwd is normalized before the path policy and the note', () => {
+  const f = fixture();
+  try {
+    const extended = `\\\\?\\${f.cwd}`;
+    f.thread('main', { cwd: extended }); f.turn('main');
+    f.item('main', { type: 'userMessage', content: [{ type: 'text', text: 'Record the shared database decision.' }] }, 1);
+    f.item('main', { type: 'fileChange', changes: [{ path: `${extended}\\result.txt`, kind: 'update' }] }, 2);
+    f.item('main', { type: 'agentMessage', text: 'Recorded.', phase: 'final_answer' }, 3);
+    const outcome = captureCodexSqliteSession({ ...f.options, sessionId: 'main', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, true, outcome.skip);
+    const raw = fs.readFileSync(outcome.notePath, 'utf8');
+    assert.equal(parseFrontmatter(raw).fields.cwd, toPosix(f.cwd), 'the prefix never reaches the note');
+    assert.match(raw, /result\.txt/);
+    assert.ok(!raw.includes('//?/'), 'no extended-length prefix anywhere in the note');
+
+    // Under a protected root the same thread is refused, which the raw prefix used to defeat.
+    const env = { ...f.env, HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([f.cwd]) };
+    const excluded = captureCodexSqliteSession({ ...f.options, env, sessionId: 'main', deadlineAt: Date.now() + 3000 });
+    assert.equal(excluded.action, 'excluded');
   } finally { f.close(); }
 });

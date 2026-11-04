@@ -4,9 +4,20 @@
  * Nothing here touches the filesystem, which is what makes the rest testable.
  */
 
-/** Windows backslashes to forward slashes. Vault paths are always POSIX. */
+/**
+ * Windows backslashes to forward slashes. Vault paths are always POSIX.
+ *
+ * A Windows extended-length prefix (`\\?\C:\x`, which Codex 0.166 writes into
+ * every thread's `cwd`) or device prefix (`\\.\C:\x`) is dropped, so the path
+ * can be matched against a repository root. The UNC form (`\\?\UNC\host\share`)
+ * becomes the plain UNC path, which `isLocalPath` still refuses.
+ */
 export function toPosix(value) {
-  return typeof value === 'string' ? value.replace(/\\/g, '/') : '';
+  if (typeof value !== 'string') return '';
+  const posix = value.replace(/\\/g, '/');
+  if (!/^\/\/[?.]\//.test(posix)) return posix;
+  const rest = posix.slice(4);
+  return /^UNC\//i.test(rest) ? `//${rest.slice(4)}` : rest;
 }
 
 /** CRLF, a bare CR, U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR. Built from char codes: neither separator may appear literally inside a regex literal. */

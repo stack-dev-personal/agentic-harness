@@ -24,7 +24,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .config import ENV_DATABASE_URL, ENV_REALMS, load_db_settings, parse_realm_policies
+from .config import ENV_DATABASE_URL, ENV_REALMS, load_db_settings, machine_name, parse_realm_policies
 from .embedding import Embedder, FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import EmbeddingError, IngestError
@@ -98,7 +98,8 @@ def run_verify(
         snapshot = _walk(args.path, reader.database_now())
         model = embedder or FastEmbedEmbedder()
         counter = count_tokens or build_token_counter(model)
-        report = run_audit(reader, snapshot, model, counter, sample_size=args.sample, seed=args.seed)
+        report = run_audit(reader, snapshot, model, counter, sample_size=args.sample, seed=args.seed,
+                           machine=machine_name())
     except IngestError as exc:
         print(f"error: {_redacted(str(exc))}", file=sys.stderr)
         return EXIT_UNAVAILABLE

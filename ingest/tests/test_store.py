@@ -498,6 +498,23 @@ def test_deleting_with_a_cutoff_rechecks_it_in_the_same_statement() -> None:
     assert params[1] == ["projects/a.md"] and params[-1] == CUTOFF
 
 
+def test_a_machine_scope_spares_rows_another_machine_captured() -> None:
+    conn = FakeConnection()
+    conn.next_rows = [("projects/a.md",)]
+
+    PostgresStore(conn).list_external_ids("obsidian", realm="projects", machine="stack-laptop")
+
+    _, sql, params = conn.log[-1]
+    assert sql.endswith("AND coalesce(metadata->>'machine', '') IN ('', %s)")
+    assert params[-1] == "stack-laptop"
+
+    conn.rowcount = 1
+    PostgresStore(conn).delete_documents("obsidian", ["projects/a.md"], realm="projects", machine="stack-laptop")
+    _, sql, params = conn.log[-1]
+    assert sql.endswith("AND coalesce(metadata->>'machine', '') IN ('', %s)")
+    assert params[-1] == "stack-laptop"
+
+
 def test_without_a_cutoff_the_sweep_sql_is_unchanged() -> None:
     conn = FakeConnection()
     store = PostgresStore(conn)

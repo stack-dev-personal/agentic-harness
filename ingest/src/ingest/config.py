@@ -139,6 +139,34 @@ SDK_ORIGIN_PREFIX = "sdk"
 # is on disk but not listed: a realm cloned by mistake must never enter this
 # machine's store. The policy is consumed by the sync script, not by ingest.
 ENV_REALMS = "HARNESS_REALMS"
+# `HARNESS_MACHINE=stack-laptop` — written into every captured note as `machine:`.
+# The orphan sweep needs it: a row whose note names another machine is that
+# machine's to sweep, so two clones of one realm that have not synced cannot
+# delete each other's sessions.
+ENV_MACHINE = "HARNESS_MACHINE"
+# The shape the hooks accept (hooks/lib/machine-env.mjs MACHINE_NAME_PATTERN); a
+# name they reject is written into no note, so the sweep must reject it too.
+MACHINE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+
+def machine_name(env: dict[str, str] | None = None) -> str | None:
+    """``HARNESS_MACHINE`` as the hooks accept it, or ``None`` when unset.
+
+    A set but malformed name raises: scoping the orphan sweep to a value no
+    note carries would quietly stop every one of this machine's rows from
+    ever being swept.
+    """
+    source = os.environ if env is None else env
+    value = (source.get(ENV_MACHINE) or "").strip()
+    if not value:
+        return None
+    if not MACHINE_NAME.fullmatch(value):
+        raise ConfigError(
+            f"{ENV_MACHINE}={value!r} is not a machine name: lowercase letters, digits and '-', "
+            "starting with a letter or digit, 32 at most (e.g. home-pc). A hostname is not one; "
+            f"set {ENV_MACHINE} in ~/.harness/machine.env to the name the hooks use"
+        )
+    return value
 REALM_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 REALM_POLICIES = frozenset({"push", "local"})
 

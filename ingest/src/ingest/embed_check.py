@@ -35,6 +35,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from .config import machine_name
 from .embedding import Embedder, FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import ConfigError, EmbeddingError, IngestError
@@ -418,16 +419,8 @@ def _package_version(package: str) -> str:
 
 
 def _machine_label() -> str:
-    value = os.environ.get(ENV_MACHINE, "").strip()
-    if not value:
-        return UNKNOWN
-    if not MACHINE_LABEL.fullmatch(value):
-        raise ConfigError(
-            f"{ENV_MACHINE}={value!r} is not a machine name: lowercase letters, digits and '-', "
-            "starting with a letter or digit, 32 at most (e.g. home-pc). A hostname is not one; "
-            f"set {ENV_MACHINE} in ~/.harness/machine.env to the name the hooks use"
-        )
-    return value
+    """``HARNESS_MACHINE`` as the hooks accept it, else ``unknown``; one rule with the sweep."""
+    return machine_name() or UNKNOWN
 
 
 # -- parsing and serialising --------------------------------------------------------

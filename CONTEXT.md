@@ -273,7 +273,9 @@ bare id for observations) so the three never collide inside one `source`.
 creates a duplicate, because a rename is indistinguishable from delete-plus-create.
 
 Orphan sweep: after a **full** ingest of one source, delete documents for that source whose
-`external_id` was not seen in the walk. Put this behind an explicit `--prune` flag, **off by default** —
+`external_id` was not seen in the walk, scoped to the realms walked and to this machine (a row
+whose note names another `machine:` is never this walk's orphan; found 2026-11-04 after the
+jobs container deleted stack-mac's sessions). Put this behind an explicit `--prune` flag, **off by default** —
 otherwise a partial or interrupted run silently mass-deletes.
 
 ### 2. Obsidian vault (live)

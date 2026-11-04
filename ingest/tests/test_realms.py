@@ -191,7 +191,7 @@ def test_a_note_moved_from_projects_to_harness_is_a_metadata_update_and_nothing_
         documents = load_vault(tmp_path, allowed_realms=["projects", "classes", "harness"]).documents
         stats = IngestPipeline(fake_store, fake_embedder, chunker).run(documents)
         # written_before=None: the strictest sweep, sparing nothing written during the run.
-        return stats, _sweep(args, fake_store, documents, stats, None)
+        return stats, _sweep(args, fake_store, documents, stats, None, "test-machine")
 
     first, _ = full_run()
     assert first.count(Action.INSERTED) == 2

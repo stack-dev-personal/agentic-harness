@@ -83,7 +83,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const result = checkpointSessions({ candidates, vaultRoot, stateDir, log });
     const counts = { 'claude-code': 0, codex: 0, hermes: 0 };
     for (const candidate of candidates) counts[candidate.runtime] = (counts[candidate.runtime] || 0) + 1;
-    log(`checkpoint: runtimes=${JSON.stringify(counts)} eligible=${result.eligible} written=${result.written} excluded=${result.excluded} errors=${result.errors} deferred=${result.deferred}`);
+    log(`checkpoint: runtimes=${JSON.stringify(counts)} eligible=${result.eligible} written=${result.written} excluded=${result.excluded} unsupported=${result.unsupported} errors=${result.errors} deferred=${result.deferred}`);
     if (result.touchedPaths.length) {
       const queued = queue({ notePaths: result.touchedPaths, vaultRoot, env: loaded, log, startTask: false });
       if (!queued.queued) throw new Error('checkpoint queue handoff failed; capture will retry');
@@ -95,7 +95,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const health = { ...result, failed: after.failed.length + legacy.failed.length + result.errors + result.deferred + Number(result.truncated) + discoveryFailures,
       ingested: before.ingested + legacy.ingested + after.ingested };
     persist(path.join(stateDir, 'memory-health.json'), JSON.stringify({ checkedAt: new Date().toISOString(),
-      runtimes: counts, capabilities, eligible: result.eligible, written: result.written, excluded: result.excluded,
+      runtimes: counts, capabilities, eligible: result.eligible, written: result.written, excluded: result.excluded, unsupported: result.unsupported,
       errors: result.errors, deferred: result.deferred, failed: health.failed, ingested: health.ingested }));
     return health;
   } finally { releaseRealmLock(lock); }

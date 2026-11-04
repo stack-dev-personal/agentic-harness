@@ -216,11 +216,15 @@ export function writeNote({ context, sessionsDir, area, collection, vaultRoot })
   if (!isSafeFilenameSegment(context.sessionId) || !pathWithin(canonicalPath(vaultRoot), canonicalPath(sessionsDir))) {
     return { written: false, action: 'skip', skip: 'invalid session id or vault destination', touchedPaths: [], vaultRoot };
   }
-  const next = buildFields(context);
   // The head of the chain, not the base note: once an `-r2` exists it is the
   // one that carries the session's current state, and planning against the
-  // superseded base would fork a new note on every later SessionEnd.
+  // superseded base would fork a new note on every later SessionEnd. The head
+  // also keeps its own id: planning with the base id renamed `-r2` back to
+  // `session-<id>` on every later merge, and the store then filed the head's
+  // content under the base note's row.
   const head = resolveChainHead(sessionsDir, context.sessionId);
+  const headContext = head.index > 1 ? { ...context, noteId: noteId(context.sessionId, head.index) } : context;
+  const next = buildFields(headContext);
   const targetPath = head.path;
   if (!pathWithin(canonicalPath(vaultRoot), canonicalPath(targetPath))) return { written: false, action: 'skip', skip: 'note target outside vault', touchedPaths: [], vaultRoot };
 
@@ -237,13 +241,13 @@ export function writeNote({ context, sessionsDir, area, collection, vaultRoot })
   }
 
   if (plan.action === ACTION_RESUME) {
-    return writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
+    return writeResumeNote({ context: headContext, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
   }
 
   const fields = withLinks(plan.fields, area);
   // The previous body carries anything Stack typed below the generated marker;
   // `renderBody` regenerates the machine sections and re-appends the rest.
-  const merged = { ...context, previousBody: current.body };
+  const merged = { ...headContext, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
     return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };

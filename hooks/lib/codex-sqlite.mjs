@@ -53,6 +53,13 @@ const nativeId = id => String(id || '').replace(/^codex-/, '');
 const qualify = id => `codex-${nativeId(id)}`;
 const millis = value => Number(value || 0) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
 const iso = value => new Date(millis(value) || Date.now()).toISOString();
+// Codex 0.166 no longer records a delegated thread's spawn prompt in native
+// history (it survives only in the rollout file, which is not authoritative for
+// a paginated thread). Such a child cannot get the note the contract requires,
+// so it is reported as unsupported: not written, not a failure, never with its
+// parent's prompts.
+const UNSUPPORTED_CHILD_SKIP = 'child task unavailable; inherited context excluded';
+const UNSUPPORTED_CHILD_LOG = 'Codex SQLite capability unavailable: child task unavailable (the delegated assignment is not in native history)';
 
 function capability(message) {
   const error = new Error(`Codex SQLite capability unavailable: ${message}`);
@@ -74,6 +81,10 @@ function ancestry(id, parentById) {
 
 function readThreadMetadata(state) {
   const rows = state.prepare('SELECT id,cwd,source,model_provider,model,created_at_ms,updated_at_ms,history_mode,archived,originator FROM threads').all();
+  // Native paths are normalized at this boundary: Codex 0.166 records every cwd
+  // as `\\?\C:\...`, which realpath cannot resolve and pathWithin never matches,
+  // so the path policy could neither verify nor refuse the session.
+  for (const row of rows) row.cwd = toPosix(row.cwd || '');
   const threads = new Map(rows.map(row => [row.id, row]));
   const parentById = new Map();
   for (const row of state.prepare('SELECT parent_thread_id,child_thread_id FROM thread_spawn_edges').all()) parentById.set(row.child_thread_id, row.parent_thread_id);
@@ -142,7 +153,7 @@ function entriesFromItems(rows, thread, ownTask) {
       const text = humanText(item.content);
       if (text) entries.push({ type: 'user', origin: { kind: 'human' }, timestamp, cwd, message: { content: text } });
       const images = Array.isArray(item.content) ? item.content.filter(block => block?.type === 'localImage' && typeof block.path === 'string') : [];
-      if (images.length) entries.push({ type: 'assistant', timestamp, cwd, message: { content: images.map((image, index) => ({ type: 'tool_use', id: `${item.id}:image:${index}`, name: 'Read', input: { file_path: image.path } })) } });
+      if (images.length) entries.push({ type: 'assistant', timestamp, cwd, message: { content: images.map((image, index) => ({ type: 'tool_use', id: `${item.id}:image:${index}`, name: 'Read', input: { file_path: toPosix(image.path) } })) } });
       continue;
     }
     if (item.type === 'agentMessage' && (item.phase == null || ['final', 'final_answer', 'partial_answer'].includes(item.phase))) {
@@ -153,10 +164,14 @@ function entriesFromItems(rows, thread, ownTask) {
     if (item.type === 'commandExecution' && typeof item.command === 'string') content.push({ type: 'tool_use', id: item.id,
       name: 'PowerShell', input: { command: item.command } });
     if (item.type === 'imageView' && typeof item.path === 'string') content.push({ type: 'tool_use', id: item.id,
-      name: 'Read', input: { file_path: item.path } });
+      name: 'Read', input: { file_path: toPosix(item.path) } });
     if (item.type === 'fileChange' && Array.isArray(item.changes)) {
-      for (const [index, change] of item.changes.entries()) if (typeof change?.path === 'string') content.push({ type: 'tool_use', id: `${item.id}:${index}`,
-        name: 'Write', input: { file_path: path.isAbsolute(change.path) ? change.path : path.resolve(cwd, change.path) } });
+      for (const [index, change] of item.changes.entries()) {
+        if (typeof change?.path !== 'string') continue;
+        const changePath = toPosix(change.path);
+        content.push({ type: 'tool_use', id: `${item.id}:${index}`,
+          name: 'Write', input: { file_path: path.isAbsolute(changePath) ? changePath : path.resolve(cwd, changePath) } });
+      }
     }
     if (item.type === 'mcpToolCall' && typeof item.server === 'string' && typeof item.tool === 'string') {
       const input = item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? item.arguments : {};
@@ -198,13 +213,16 @@ function preflightPaths({ db, thread, parentById, historyFile, env, deadlineAt,
   budget.rows += count;
   if (budget.rows > MAX_ROWS) throw capability('structured path activity exceeds row budget');
   const cwd = thread.cwd || '';
-  const paths = db.prepare(PATH_SQL).all(thread.id, include, cwd, cwd, cwd, cwd, cwd, cwd, MAX_ROWS + 1);
-  budget.rows += paths.length;
+  const rows = db.prepare(PATH_SQL).all(thread.id, include, cwd, cwd, cwd, cwd, cwd, cwd, MAX_ROWS + 1);
+  budget.rows += rows.length;
   if (budget.rows > MAX_ROWS) throw capability('structured paths exceed row budget');
-  for (const item of paths) {
+  const paths = [];
+  for (const item of rows) {
     if (typeof item.path !== 'string' || typeof item.cwd !== 'string') throw capability('invalid structured path metadata');
     budget.bytes += Buffer.byteLength(item.path, 'utf8') + Buffer.byteLength(item.cwd, 'utf8');
     if (budget.bytes > MAX_BYTES) throw capability('structured paths exceed capture budget');
+    // Item paths and cwds come raw from native JSON; see readThreadMetadata.
+    paths.push({ path: toPosix(item.path), cwd: toPosix(item.cwd) });
   }
   if (Date.now() >= deadlineAt) throw capability('structured path policy budget exceeded');
   return sessionMemoryEligibility({ input: baseInput(thread, parentById, historyFile), env, paths });
@@ -270,9 +288,9 @@ function captureNative({ thread, threads, parentById, stateFile, historyFile, va
     const descendantPolicy = preflightDescendants({ db, thread, threads, parentById, historyFile, env, deadlineAt });
     if (!descendantPolicy.allowed) return { ...skip(descendantPolicy.reason), action: 'excluded' };
     const parent = input.parentSession;
-    if (thread.isSubagent && !parent) { log('Codex SQLite capability unavailable: child task unavailable'); return skip('child task unavailable; inherited context excluded'); }
+    if (thread.isSubagent && !parent) { log(UNSUPPORTED_CHILD_LOG); return { ...skip(UNSUPPORTED_CHILD_SKIP), action: 'unsupported' }; }
     const ownTask = parent ? childTask(db, thread.id, parent) : '';
-    if (parent && !ownTask) { log('Codex SQLite capability unavailable: child task unavailable'); return skip('child task unavailable; inherited context excluded'); }
+    if (parent && !ownTask) { log(UNSUPPORTED_CHILD_LOG); return { ...skip(UNSUPPORTED_CHILD_SKIP), action: 'unsupported' }; }
     const childGuard = parent ? " AND item_type <> 'userMessage'" : '';
     const rows = db.prepare(`SELECT ${ITEM_PROJECTION} AS item_json,item_type,created_at_ms,completed_at_ms FROM thread_items WHERE thread_id=? AND item_type IN (${TYPE_SQL})${childGuard} ORDER BY rollout_ordinal LIMIT ?`).all(thread.id, ...TYPES, MAX_ROWS + 1);
     if (rows.length > MAX_ROWS) throw capability('native history exceeds row budget');
@@ -295,6 +313,10 @@ export function discoverCodexSqliteSessions({ home = os.homedir(), vaultRoot, en
   log = () => {}, openDatabase = openNativeDatabase, runGit, stateDir, capturedBy = 'sweep' } = {}) {
   const candidates = [];
   candidates.authoritativeIds = new Set();
+  // One line per distinct capability message per run: fifty delegated threads
+  // with the same gap used to write fifty identical lines every five minutes.
+  const seenMessages = new Set();
+  const logOnce = message => { if (seenMessages.has(message)) return; seenMessages.add(message); log(message); };
   const stateFile = path.join(home, '.codex', 'state_5.sqlite');
   const historyFile = path.join(home, '.codex', 'thread_history_1.sqlite');
   if (!fs.existsSync(stateFile)) return candidates;
@@ -320,7 +342,7 @@ export function discoverCodexSqliteSessions({ home = os.homedir(), vaultRoot, en
       candidates.push({ runtime: 'codex', sessionId: qualify(thread.id), nativeSessionId: thread.id,
         sourceKind: 'sqlite', authoritative: true, cwd: input.cwd, input, fingerprint,
         capture: options => captureNative({ thread, threads, parentById, stateFile, historyFile, vaultRoot, env,
-          openDatabase, log, runGit, stateDir, capturedBy, ...options }) });
+          openDatabase, log: logOnce, runGit, stateDir, capturedBy, ...options }) });
     }
     return candidates;
   } catch (error) {

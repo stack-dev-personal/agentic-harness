@@ -53,6 +53,9 @@ The task runs every five minutes, saves new or changed native sessions as active
 notes even while chats remain open, and indexes the changed notes. Unchanged
 native revisions are skipped. SessionEnd concludes the note. Child adapters
 retain their own assignment/results and exclude inherited parent prompts.
+A delegated Codex thread whose assignment is not in native history (Codex
+0.166 keeps the spawn prompt only in the rollout file) is counted as
+`unsupported` in `memory-health.json`: not written, not a failure.
 The old Codex script/queue names remain compatibility entry points.
 Logs are in
 `~/.codex/hooks/session-capture.log` and `~/.harness/memory-worker.log`.

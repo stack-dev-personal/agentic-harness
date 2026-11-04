@@ -21,18 +21,30 @@ export function saveMemoryCheckpoints({ stateDir = path.join(os.homedir(), '.har
 export function checkpointSessions({ candidates, vaultRoot, stateDir = path.join(os.homedir(), '.harness'),
   budgetMs = 15 * 60 * 1000, clock = Date.now, log = () => {} }) {
   const saved = readState(stateDir, vaultRoot);
-  const result = { scanned: 0, eligible: 0, written: 0, errors: 0, excluded: 0, deferred: 0, truncated: false, touchedPaths: [], checkpoints: {} };
+  const result = { scanned: 0, eligible: 0, written: 0, errors: 0, excluded: 0, unsupported: 0, deferred: 0, truncated: false, touchedPaths: [], checkpoints: {} };
   const deadline = clock() + budgetMs;
   for (const candidate of candidates) {
     if (clock() >= deadline) { result.truncated = true; break; }
     result.scanned += 1;
     const key = `${candidate.runtime}:${candidate.sessionId}`;
     const previous = saved[key];
-    if (previous?.fingerprint === candidate.fingerprint && previous.paths?.length && previous.paths.every(file => fs.existsSync(file))) continue;
+    if (previous?.fingerprint === candidate.fingerprint) {
+      // An unsupported thread is remembered at its native revision: the same
+      // history gives the same answer, so it is counted without being reopened.
+      if (previous.unsupported) { result.unsupported += 1; continue; }
+      if (previous.paths?.length && previous.paths.every(file => fs.existsSync(file))) continue;
+    }
     result.eligible += 1;
     try {
       const outcome = candidate.capture({ deadlineAt: Math.min(deadline, clock() + 30_000) });
       if (outcome.action === 'excluded') { result.excluded += 1; continue; }
+      // A runtime that cannot supply what a note needs (a delegated Codex thread
+      // without its recorded assignment) is reported, not retried as a failure.
+      if (outcome.action === 'unsupported') {
+        result.unsupported += 1;
+        result.checkpoints[key] = { fingerprint: candidate.fingerprint, paths: [], unsupported: true };
+        continue;
+      }
       if (outcome.action === 'deferred') { result.deferred += 1; continue; }
       if (!(outcome.written || outcome.action === 'noop')) {
         if (!/no (?:human|user) prompts|subagent did nothing/.test(outcome.skip || '')) result.errors += 1;

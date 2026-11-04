@@ -19,9 +19,11 @@ hub    = wherever the realm remotes live: private GitHub repos today, a homelab 
 - **A realm is marked by a committed `.realm` file** holding its name, at the vault root
   (the whole vault is one realm) or in a top-level folder named after it. Notes outside
   every realm are skipped; a folder not named after its marker is refused.
-- **Prune is scoped to realms.** A nightly `--prune` deletes only rows of the realms it
-  just walked, so two machines sharing a store cannot delete each other's rows. Rows
-  from before realms existed are swept only by `--prune-legacy`, on one machine.
+- **Prune is scoped to realms, and to this machine.** A nightly `--prune` deletes only
+  rows of the realms it just walked, and never a row whose note names another machine
+  (`machine:`), so two clones of one realm that have not synced yet cannot delete each
+  other's sessions. Rows from before realms existed are swept only by `--prune-legacy`,
+  on one machine.
 - **Machine file.** `~/.harness/machine.env` says what this machine is:
 
   ```

@@ -74,7 +74,8 @@ Worker state lives outside the vault under `~/.harness/`:
 - `memory-activation.json` limits discovery to recent/new activity; historical
   content is not automatically backfilled.
 - `memory-health.json` and `memory-worker.log` report runtime coverage, failures,
-  exclusions and ingestion counts without copying session text.
+  exclusions, unsupported delegated threads (a Codex child whose assignment is
+  not in native history) and ingestion counts without copying session text.
 - `memory-exclusions/` stores hashed session identities and content-free sticky
   exclusion reasons, including parent exclusion inheritance.
 

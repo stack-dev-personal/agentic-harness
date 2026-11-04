@@ -27,6 +27,12 @@ def no_machine_env(monkeypatch, tmp_path):
 
 
 @pytest.fixture
+def machine_name(monkeypatch):
+    """The sweep refuses to run without knowing which machine it is."""
+    monkeypatch.setenv("HARNESS_MACHINE", "test-machine")
+
+
+@pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     """No inherited credentials, and no repo .env picked up by the walk-up."""
     for name in CONNECTION_VARS:
@@ -154,7 +160,23 @@ def test_prune_is_off_by_default(clean_env, vault_path, capsys):
     assert "Orphan sweep" not in capsys.readouterr().out
 
 
-def test_prune_dry_run_reports_the_sweep(clean_env, vault_path, capsys):
+def test_prune_refuses_without_a_machine_name(clean_env, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("HARNESS_MACHINE", raising=False)
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--prune", "--env-file", str(clean_env)])
+    assert code == 2
+    assert "HARNESS_MACHINE" in capsys.readouterr().err
+
+
+def test_prune_refuses_a_machine_name_the_hooks_would_not_write(clean_env, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HARNESS_MACHINE", "Stack-Laptop")
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--prune", "--env-file", str(clean_env)])
+    assert code == 2
+    assert "is not a machine name" in capsys.readouterr().err
+
+
+def test_prune_dry_run_reports_the_sweep(clean_env, machine_name, vault_path, capsys):
     main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
           "--prune", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
@@ -164,7 +186,7 @@ def test_prune_dry_run_reports_the_sweep(clean_env, vault_path, capsys):
     assert "would delete" not in out
 
 
-def test_prune_declines_after_a_limited_run(clean_env, tmp_path, capsys):
+def test_prune_declines_after_a_limited_run(clean_env, machine_name, tmp_path, capsys):
     main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
           "--prune", "--limit", "1", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
@@ -375,7 +397,7 @@ def realm_vault(tmp_path):
     return vault
 
 
-def test_prune_sweeps_each_realm_the_run_walked(clean_env, tmp_path, capsys):
+def test_prune_sweeps_each_realm_the_run_walked(clean_env, machine_name, tmp_path, capsys):
     main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
           "--prune", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
@@ -383,14 +405,14 @@ def test_prune_sweeps_each_realm_the_run_walked(clean_env, tmp_path, capsys):
     assert "legacy" not in out, "a realm run must not sweep the pre-realm rows without --prune-legacy"
 
 
-def test_prune_legacy_sweeps_the_pre_realm_rows_too(clean_env, tmp_path, capsys):
+def test_prune_legacy_sweeps_the_pre_realm_rows_too(clean_env, machine_name, tmp_path, capsys):
     main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
           "--prune", "--prune-legacy", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
     assert "legacy" in out
 
 
-def test_prune_legacy_needs_a_full_pass(clean_env, tmp_path, capsys):
+def test_prune_legacy_needs_a_full_pass(clean_env, machine_name, tmp_path, capsys):
     vault = realm_vault(tmp_path)
     code = main(["--source", "obsidian", "--path", str(vault), "--only", "projects/a.md",
                  "--prune-legacy", "--dry-run", "--env-file", str(clean_env)])

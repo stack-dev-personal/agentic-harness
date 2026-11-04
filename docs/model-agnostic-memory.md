@@ -16,7 +16,11 @@ native schema versions report a capability error and leave data untouched.
 Meaningful main sessions and delegated tasks are eligible regardless of runtime
 or SDK origin. Explicit purposes `housekeeping`, `observer`, and `derivative` are
 excluded. Delegated notes contain their own assignment, result and activity, with
-parent/child links; inherited parent prompts are not re-exported.
+parent/child links; inherited parent prompts are not re-exported. When the
+runtime did not record the assignment (Codex 0.166 encrypts the spawn prompt in
+SQLite and rollout files alike), the note is still written, labelled by task
+name and parent, with a line saying the assignment was not recorded (contract
+change approved 2026-11-04).
 
 Native event names are translated to shared lifecycle states. Checkpoints remain
 active; actual session termination concludes a note. Existing external IDs and
@@ -74,8 +78,8 @@ Worker state lives outside the vault under `~/.harness/`:
 - `memory-activation.json` limits discovery to recent/new activity; historical
   content is not automatically backfilled.
 - `memory-health.json` and `memory-worker.log` report runtime coverage, failures,
-  exclusions, unsupported delegated threads (a Codex child whose assignment is
-  not in native history) and ingestion counts without copying session text.
+  exclusions, unsupported delegated threads (a Codex child with no resolvable
+  parent) and ingestion counts without copying session text.
 - `memory-exclusions/` stores hashed session identities and content-free sticky
   exclusion reasons, including parent exclusion inheritance.
 

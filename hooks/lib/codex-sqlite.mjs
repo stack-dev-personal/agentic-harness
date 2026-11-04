@@ -52,13 +52,30 @@ const nativeId = id => String(id || '').replace(/^codex-/, '');
 const qualify = id => `codex-${nativeId(id)}`;
 const millis = value => Number(value || 0) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
 const iso = value => new Date(millis(value) || Date.now()).toISOString();
-// Codex 0.166 no longer records a delegated thread's spawn prompt in native
-// history (it survives only in the rollout file, which is not authoritative for
-// a paginated thread). Such a child cannot get the note the contract requires,
-// so it is reported as unsupported: not written, not a failure, never with its
-// parent's prompts.
+// A thread with no note to belong to is reported as unsupported: not written,
+// not a failure, never with inherited prompts. Two cases: a delegate whose parent
+// cannot be resolved, and a spawn edge whose thread does not say it is a delegate
+// and whose parent recorded no assignment (a fork, not a delegation).
 const UNSUPPORTED_CHILD_SKIP = 'child task unavailable; inherited context excluded';
-const UNSUPPORTED_CHILD_LOG = 'Codex SQLite capability unavailable: child task unavailable (the delegated assignment is not in native history)';
+const UNSUPPORTED_CHILD_LOG = 'Codex SQLite capability unavailable: child task unavailable (no resolvable parent thread)';
+const UNSUPPORTED_EDGE_LOG = 'Codex SQLite capability unavailable: child task unavailable (spawn edge without a delegated source or a recorded assignment)';
+// Logged once per run so a regression in spawn-prompt detection stays visible.
+const PLACEHOLDER_LOG = 'Codex delegated assignment not in native history; writing the note with a placeholder task';
+
+/**
+ * The task line for a delegated thread whose assignment Codex did not record.
+ *
+ * Codex 0.166 encrypts the spawn prompt at rest, in SQLite and in the rollout
+ * file alike, so it cannot be read. Per the contract change of 2026-11-04 the
+ * note is written anyway: labelled by its task name and parent, carrying the
+ * child's own results and activity, with this line where the task would be.
+ * The line names no cause or version: it is persisted into notes, and the
+ * reason may change with the next Codex release.
+ */
+function placeholderAssignment(thread) {
+  const name = toPosix(thread.agentPath || '').split('/').filter(Boolean).pop() || thread.agentNickname || thread.id;
+  return `Delegated Codex task ${name}: assignment not recorded by Codex`;
+}
 
 function capability(message) {
   const error = new Error(`Codex SQLite capability unavailable: ${message}`);
@@ -93,6 +110,9 @@ function readThreadMetadata(state) {
     try { source = JSON.parse(row.source); } catch { throw capability('invalid native thread source'); }
     const parent = source?.subagent?.thread_spawn?.parent_thread_id;
     row.isSubagent = Boolean(source?.subagent);
+    const spawn = source?.subagent?.thread_spawn;
+    row.agentPath = typeof spawn?.agent_path === 'string' ? spawn.agent_path : '';
+    row.agentNickname = typeof spawn?.agent_nickname === 'string' ? spawn.agent_nickname : '';
     // Translate the native internal observer role to shared purpose policy.
     if (source?.subagent?.other === 'guardian') row.purpose = 'observer';
     if (parent && !parentById.has(row.id)) parentById.set(row.id, parent);
@@ -288,11 +308,16 @@ function captureNative({ thread, threads, parentById, stateFile, historyFile, va
     if (!descendantPolicy.allowed) return { ...skip(descendantPolicy.reason), action: 'excluded' };
     const parent = input.parentSession;
     if (thread.isSubagent && !parent) { log(UNSUPPORTED_CHILD_LOG); return { ...skip(UNSUPPORTED_CHILD_SKIP), action: 'unsupported' }; }
-    const ownTask = parent ? childTask(db, thread.id, parent) : '';
-    if (parent && !ownTask) { log(UNSUPPORTED_CHILD_LOG); return { ...skip(UNSUPPORTED_CHILD_SKIP), action: 'unsupported' }; }
+    const recorded = parent ? childTask(db, thread.id, parent) : '';
+    if (parent && !recorded && !thread.isSubagent) { log(UNSUPPORTED_EDGE_LOG); return { ...skip(UNSUPPORTED_CHILD_SKIP), action: 'unsupported' }; }
     const childGuard = parent ? " AND item_type <> 'userMessage'" : '';
     const rows = db.prepare(`SELECT ${ITEM_PROJECTION} AS item_json,item_type,created_at_ms,completed_at_ms FROM thread_items WHERE thread_id=? AND item_type IN (${TYPE_SQL})${childGuard} ORDER BY rollout_ordinal LIMIT ?`).all(thread.id, ...TYPES, MAX_ROWS + 1);
     if (rows.length > MAX_ROWS) throw capability('native history exceeds row budget');
+    // A placeholder stands in for a task only above the delegate's own activity;
+    // a delegate that did nothing would otherwise become a note of one synthetic line.
+    if (parent && !recorded && !rows.length) return skip('subagent did nothing; assignment not recorded');
+    if (parent && !recorded) log(PLACEHOLDER_LOG);
+    const ownTask = parent ? (recorded || placeholderAssignment(thread)) : '';
     const entries = entriesFromItems(rows, thread, ownTask);
     if (Date.now() >= deadlineAt) return skip('capture budget spent');
     const children = [...parentById.entries()].filter(([, parentId]) => parentId === thread.id).map(([id]) => `session-${qualify(id)}`);
@@ -336,7 +361,11 @@ export function discoverCodexSqliteSessions({ home = os.homedir(), vaultRoot, en
       const stats = history?.prepare('SELECT count(*) AS items,max(updated_at_ordinal) AS updated_ordinal,max(rollout_ordinal) AS ordinal,max(created_at_ms) AS latest_ms,max(rowid) AS latest_row FROM thread_items WHERE thread_id=?').get(thread.id) || {};
       const turn = history?.prepare('SELECT status,started_at,completed_at,rollout_ordinal FROM thread_turns WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1').get(thread.id) || {};
       if (Math.max(millis(thread.updated_at_ms), millis(stats.latest_ms), millis(turn.completed_at)) < Number(since || 0)) continue;
-      const fingerprint = JSON.stringify([thread.updated_at_ms, thread.cwd, thread.model, thread.model_provider, stats.items, stats.updated_ordinal, stats.ordinal, stats.latest_ms, stats.latest_row, turn.status, turn.started_at, turn.completed_at]);
+      // A delegate's revision includes its parent's collab items: a spawn record that
+      // lands after the child's first capture must replace the placeholder task.
+      const parentId = parentById.get(thread.id) || '';
+      const parentCollab = parentId && history ? history.prepare("SELECT count(*) AS items,max(rowid) AS latest_row FROM thread_items WHERE thread_id=? AND item_type IN ('collabAgentToolCall','collabToolCall')").get(parentId) || {} : {};
+      const fingerprint = JSON.stringify([thread.updated_at_ms, thread.cwd, thread.model, thread.model_provider, stats.items, stats.updated_ordinal, stats.ordinal, stats.latest_ms, stats.latest_row, turn.status, turn.started_at, turn.completed_at, parentCollab.items, parentCollab.latest_row]);
       const input = baseInput(thread, parentById, historyFile);
       candidates.push({ runtime: 'codex', sessionId: qualify(thread.id), nativeSessionId: thread.id,
         sourceKind: 'sqlite', authoritative: true, cwd: input.cwd, input, fingerprint,

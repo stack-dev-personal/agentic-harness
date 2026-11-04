@@ -60,6 +60,19 @@ The old Codex script/queue names remain compatibility entry points.
 Logs are in
 `~/.codex/hooks/session-capture.log` and `~/.harness/memory-worker.log`.
 
+On macOS, run `python3 scripts/register-codex-ingest-macos.py --apply` from
+the repository root. It installs a user LaunchAgent that runs
+`hooks/codex-ingest-queue.mjs` every five minutes while logged in, including
+after login. That script is now the compatibility entry point for the common
+memory worker, so each run checkpoints changed Claude Code, Codex and Hermes
+sessions (open chats included), drains the shared queue and indexes the changed
+notes; failed indexing stays queued for retry. Capture only queues notes on
+macOS, so indexing does not depend on a detached hook child surviving chat
+shutdown. The worker does not synchronize Git realms or prune the database.
+Run the installer without `--apply` to inspect the generated configuration.
+The Node path is pinned to the installed version; rerun after removing that
+Node version or moving the checkout.
+
 ```
 hooks/
 ├── session-capture.mjs     the SessionEnd hook: stdin in, one note out

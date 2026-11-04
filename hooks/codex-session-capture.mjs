@@ -12,7 +12,6 @@ import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
 import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
 import { queueIngest } from './lib/ingest-queue.mjs';
 import { MAIN_TRANSCRIPT_MAX_BYTES, RESERVE_MS, RESUME_REASON, SESSIONS_DIR, STATUS_ACTIVE, STATUS_CONCLUDED, VAULT_ENV_VAR } from './lib/constants.mjs';
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv, machineName } from './lib/machine-env.mjs';

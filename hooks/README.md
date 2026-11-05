@@ -74,6 +74,9 @@ shutdown. The worker does not synchronize Git realms or prune the database.
 Run the installer without `--apply` to inspect the generated configuration.
 The Node path is pinned to the installed version; rerun after removing that
 Node version or moving the checkout.
+Realm pushes are a separate LaunchAgent: `python3 scripts/register-realm-sync-macos.py
+--apply` runs `hooks/sync-realms.mjs --push` daily at 03:30 local (logs in
+`~/.harness/realm-sync.*.log`); without it a Mac's notes reach GitHub only by hand.
 
 ```
 hooks/

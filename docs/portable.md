@@ -288,7 +288,10 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    (reads the machine file). On Linux/macOS: cron or launchd running
    `scripts/nightly-ingest.sh`. For the first night pass `-RealmSync DryRun`, read the
    log, then re-register with `-RealmSync Apply`; the switch is a re-registration, not a
-   script edit (step 12 of the home migration below does the same).
+   script edit (step 12 of the home migration below does the same). A Mac that only
+   captures and indexes (no nightly ingest of its own) still needs its realms pushed:
+   `python3 scripts/register-realm-sync-macos.py --apply` installs a daily 03:30 LaunchAgent
+   for `hooks/sync-realms.mjs --push`.
 
    **On home-pc (containers):** the nightly job and the checkpoint collector run in the
    `harness-jobs` container instead of Task Scheduler, on that machine only. Every other

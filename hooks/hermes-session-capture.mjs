@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /** Hermes native-format adapter. Shared capture owns memory policy and rendering. */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { loadMachineEnv } from './lib/machine-env.mjs';
 import * as captureModule from './lib/capture.mjs';
 import { openNativeDatabase, textFromColumn } from './lib/native-sqlite.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
@@ -271,10 +273,13 @@ if (isEntryPoint(import.meta.url)) {
   try {
     const raw = fs.readFileSync(0, 'utf8');
     const snapshot = JSON.parse(raw);
-    const result = captureHermes({ snapshot, vaultRoot: process.env.HARNESS_VAULT || path.join(process.env.USERPROFILE || '', 'vault') });
+    // machine.env underneath, as every host hook reads it: the protected
+    // folders, the vault and the worker-start switch live there.
+    const env = loadMachineEnv(process.env, os.homedir());
+    const result = captureHermes({ snapshot, vaultRoot: env.HARNESS_VAULT || path.join(env.USERPROFILE || os.homedir(), 'vault'), env });
     if (result.touchedPaths?.length) {
       const { queueIngest } = await import('./lib/ingest-queue.mjs');
-      queueIngest({ notePaths: result.touchedPaths, vaultRoot: result.vaultRoot });
+      queueIngest({ notePaths: result.touchedPaths, vaultRoot: result.vaultRoot, env });
     }
     process.stdout.write(JSON.stringify({ written: result.written, action: result.action, reason: result.skip || '' }));
   } catch { process.stderr.write('Hermes shared capture failed\n'); process.exitCode = 1; }

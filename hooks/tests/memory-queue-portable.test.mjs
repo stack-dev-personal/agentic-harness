@@ -14,6 +14,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { QUEUE_NAME, drainIngest, queueIngest } from '../lib/ingest-queue.mjs';
+import { loadMachineEnv } from '../lib/machine-env.mjs';
 
 const NOTE = ['projects', 'demo', 'sessions', 'a.md'];
 const FLAVOR = Object.freeze({ HARNESS_HOST_PATH_FLAVOR: 'win32', HARNESS_HOST_HOME: 'C:/Users/alex',
@@ -110,5 +111,21 @@ test('without a flavor an old entry from another host is kept for review, as bef
     const result = w.drain();
     assert.deepEqual(result.ingested, []);
     assert.equal(result.left.length, 1);
+  } finally { w.cleanup(); }
+});
+
+// ------------------------------------- the host stands down at cutover
+
+test('HARNESS_MEMORY_START_WORKER=0 in machine.env queues the note and starts nothing', () => {
+  const w = world();
+  try {
+    const machineEnv = path.join(w.root, 'machine.env');
+    fs.writeFileSync(machineEnv, 'HARNESS_MEMORY_START_WORKER=0\n');
+    // What every host hook does: machine.env underneath the process environment.
+    const env = loadMachineEnv({ ...w.env, HARNESS_MACHINE_ENV: machineEnv }, w.root);
+    const started = [];
+    const result = queueIngest({ notePaths: [w.note], vaultRoot: w.vaultRoot, env, run: (...args) => { started.push(args); return { status: 0 }; } });
+    assert.deepEqual([result.queued, result.taskStarted, started.length], [true, false, 0]);
+    assert.equal(fs.readFileSync(w.queueFile, 'utf8').trim().split('\n').length, 1, 'the container worker drains it');
   } finally { w.cleanup(); }
 });

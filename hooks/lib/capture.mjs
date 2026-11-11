@@ -82,13 +82,15 @@ export function captureSession({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
-  stateDir = defaultStateDir(process.env),
+  stateDir,
   entries: suppliedEntries,
   agent = 'unknown', runtime = agent, model = '', provider = '', origin,
   generator, parentSession, childSessions, promptTask,
   briefSessionId = input.sessionId,
   env = process.env,
 }) {
+  // The start-record folder of the env this capture judges by (machine.env included), as the lock reads it.
+  stateDir ??= defaultStateDir(env);
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
   if (!isSafeFilenameSegment(input.sessionId)) return skip('invalid session id');
   if ((parentSession || input.parentSession) && !isSafeFilenameSegment(parentSession || input.parentSession)) return skip('invalid parent session id');

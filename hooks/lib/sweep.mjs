@@ -293,7 +293,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = underRealmLocks({ candidate, vaultRoot, excludes, log }, () =>
+        const result = underRealmLocks({ candidate, vaultRoot, excludes, log, stateDir }, () =>
           sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir }));
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
@@ -341,11 +341,12 @@ export const SWEEP_LOCK_OWNER = 'transcript sweep';
  * realm checkout has no lock, and the capture runs as before. An excluded cwd
  * is skipped by `sweepOne` without a lock.
  */
-function underRealmLocks({ candidate, vaultRoot, excludes, log }, work) {
+function underRealmLocks({ candidate, vaultRoot, excludes, log, stateDir }, work) {
   const head = readTranscriptHead(candidate.transcriptPath);
   const projectDirName = path.basename(path.dirname(candidate.transcriptPath));
   if (excludedBy(head.cwd, excludes, projectDirName)) return work();
-  return withRealmLocks({ cwd: head.cwd, vaultRoot, log, sessions: [{ sessionId: candidate.sessionId }] }, work,
+  // The same start-record folder the capture files by.
+  return withRealmLocks({ cwd: head.cwd, vaultRoot, log, stateDir, sessions: [{ sessionId: candidate.sessionId }] }, work,
     (name, acquired) => deferredResult(candidate, name, acquired, log));
 }
 

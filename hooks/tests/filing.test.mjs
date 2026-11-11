@@ -266,3 +266,27 @@ test('a worker whose parent has notes in two folders is refused', () => {
     assert.match(worker.skip, /notes in 2 folders/);
   } finally { sandbox.cleanup(); }
 });
+
+test('capture reads start records from the folder its own env names, as the lock and the preview do', () => {
+  const w = captureWorld();
+  try {
+    const stateRoot = path.join(w.root, 'machine-env-state');
+    writeSessionStartRecord({ stateDir: path.join(stateRoot, 'session-start'), record: { at: '2026-11-03T11:59:00.000Z', sessionId: OWN, cwd: 'x',
+      realm: 'classes', collection: 'ist323', collectionSource: 'folder', source: 'none', externalIds: [], tokens: 0 } });
+    const result = w.run({ sessionId: OWN }, { stateDir: undefined, env: { USERPROFILE: w.root, HARNESS_STATE_DIR: stateRoot } });
+    assert.equal(result.written, true, result.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `${OWN}.md`), ['classes/ist323']);
+  } finally { w.cleanup(); }
+});
+
+test('an empty stub Obsidian made from a link is not a note: no conflict, and no folder decided by it', () => {
+  const w = world();
+  try {
+    const stubDir = path.join(w.vaultRoot, 'projects', 'misc', 'sessions');
+    fs.mkdirSync(stubDir, { recursive: true });
+    fs.writeFileSync(path.join(stubDir, `${OWN}.md`), '');
+    assert.deepEqual(where(file(w)), ['projects', 'plain-folder', 'folder', 'rules'], 'a lone stub decides nothing');
+    writeNoteAt(w, 'classes', 'ist323', OWN, 'folder');
+    assert.deepEqual(where(file(w)), ['classes', 'ist323', 'folder', 'note'], 'the real note wins, with no conflict');
+  } finally { w.cleanup(); }
+});

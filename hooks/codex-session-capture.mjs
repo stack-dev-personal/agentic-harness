@@ -267,10 +267,11 @@ function firstPromptFromHead(file, fallback) {
 
 export function captureCodex({
   input, vaultRoot, deadlineAt = Date.now() + BUDGET_MS, runGit, capturedBy = 'hook',
-  stateDir = defaultStateDir(process.env), home = os.homedir(),
+  stateDir, home = os.homedir(),
   allowSubagent = false, ownTask = '', childSessions = [], env = process.env,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, touchedPaths: [], vaultRoot });
+  stateDir ??= defaultStateDir(env);
   input = { ...input, runtime: 'codex' };
   const policy = sessionMemoryEligibility({ input, env });
   if (!policy.allowed) return { ...skip(policy.reason), action: 'excluded' };

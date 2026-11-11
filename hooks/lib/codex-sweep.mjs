@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isSubagentHead, readCodexHead } from './codex-head.mjs';
+import { codexLockSessions, isSubagentHead, readCodexHead } from './codex-head.mjs';
 import { RESUME_REASON } from './constants.mjs';
 import { describeHolder, holderAgeMinutes } from './realm-lock.mjs';
 import { indexNotedSessions, withRealmLocks } from './sweep.mjs';
@@ -99,7 +99,7 @@ export function sweepCodex({ home = os.homedir(), vaultRoot, capture, now = Date
         if (checkpoint ? saved[sessionId] === fingerprint && noted.has(`codex-${sessionId}`) : noted.has(`codex-${sessionId}`)) continue;
         summary.eligible += 1;
         const cwd = head.payload?.cwd || '';
-        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: LOCK_OWNER, sessions: [{ sessionId: `codex-${sessionId}`, briefSessionId: sessionId }] },
+        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: LOCK_OWNER, sessions: codexLockSessions(sessionId, head) },
           () => capture({ input: { sessionId, transcriptPath: file, cwd, hookEventName: 'SessionEnd',
             endReason: checkpoint ? RESUME_REASON : 'other' }, vaultRoot,
             deadlineAt: clock() + CAPTURE_BUDGET_MS, capturedBy: 'sweep' }),

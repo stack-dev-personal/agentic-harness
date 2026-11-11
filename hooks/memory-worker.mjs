@@ -57,7 +57,9 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
         const policy = memoryEligibility({ input: { ...candidate, runtime: 'hermes' }, env });
         if (!policy.allowed) return { written: false, action: 'excluded', touchedPaths: [] };
         return withRealmLocks({ cwd: candidate.cwd, vaultRoot, log, owner: 'memory checkpoint', env,
-          sessions: [{ sessionId: candidate.sessionId }] }, () => {
+          // A delegate is filed beside its parent or an older ancestor: lock their realms too.
+          sessions: [candidate.sessionId, candidate.parentSession, ...(candidate.ancestorSessions || [])]
+            .filter(Boolean).map((sessionId) => ({ sessionId })) }, () => {
           const { snapshot } = readHermesSession({ hermesHome, sessionId: candidate.nativeSessionId, env });
           return captureHermes({ snapshot, vaultRoot, env, deadlineAt, capturedBy: 'sweep' });
         }, () => ({ written: false, action: 'deferred', touchedPaths: [] }));

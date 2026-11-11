@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readCodexHead, isSubagentHead } from './codex-head.mjs';
+import { codexLockSessions, readCodexHead, isSubagentHead } from './codex-head.mjs';
 import { RESUME_REASON } from './constants.mjs';
 import { withRealmLocks } from './sweep.mjs';
 import { isSafeFilenameSegment } from './text.mjs';
@@ -37,7 +37,7 @@ export function captureChangedCodex({ home = os.homedir(), vaultRoot, capture, q
         const sessionId = String(head.payload?.id || head.payload?.session_id || '');
         if (!isSafeFilenameSegment(sessionId)) { result.errors++; continue; }
         const cwd = head.payload?.cwd || '';
-        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: 'codex cadence', sessions: [{ sessionId: `codex-${sessionId}`, briefSessionId: sessionId }] },
+        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: 'codex cadence', sessions: codexLockSessions(sessionId, head) },
           () => capture({ input: { sessionId, transcriptPath: file, cwd,
             hookEventName: 'SessionEnd', endReason: RESUME_REASON }, vaultRoot,
             deadlineAt: Math.min(deadline, Date.now() + 30000), capturedBy: 'sweep' }),

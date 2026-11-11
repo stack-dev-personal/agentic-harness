@@ -73,3 +73,9 @@ export function resolveCodexTranscript({ declaredPath, sessionId, home = os.home
   }
   return '';
 }
+
+/** The thread and the parent it may be filed beside (filing.mjs), as the realm lock looks them up. */
+export function codexLockSessions(sessionId, head) {
+  const parent = head.payload?.parent_thread_id || head.payload?.source?.subagent?.thread_spawn?.parent_thread_id;
+  return [sessionId, parent].filter(Boolean).map((id) => ({ sessionId: `codex-${id}`, briefSessionId: id }));
+}

@@ -59,7 +59,9 @@ function recordedSource(notePath) {
 /** Steps 1 and 2 for one session id: its own note, else its own record. */
 function placedBySession({ sessionId, briefSessionId, vaultRoot, stateDir }) {
   if (!isSafeFilenameSegment(sessionId)) return null;
-  const copies = findNotesByName(vaultRoot, noteFilename(sessionId));
+  // An empty stub Obsidian made when a link was followed is not a note: it
+  // neither places the session nor conflicts with the real one.
+  const copies = findNotesByName(vaultRoot, noteFilename(sessionId)).filter((copy) => !readNote(copy.notePath).stub);
   if (copies.length > 1) throw new FilingConflictError(sessionId, copies);
   if (copies.length === 1) {
     const [{ area, collection, notePath }] = copies;

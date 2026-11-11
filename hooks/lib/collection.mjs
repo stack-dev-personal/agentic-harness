@@ -39,7 +39,7 @@ import {
   COLLECTION_FROM_GIT,
   REALM_MARKER,
 } from './constants.mjs';
-import { hostPathFlavor } from './host-paths.mjs';
+import { hostSettings } from './host-settings.mjs';
 import { resolveRepo } from './repo.mjs';
 import { slugify, toPosix } from './text.mjs';
 
@@ -135,11 +135,15 @@ export function routeSession({
   env = process.env,
 }) {
   // Session paths from another host name no checkout on this disk: the rules
-  // read the path text alone, whatever repository a caller supplies.
-  const foreign = Boolean(hostPathFlavor(env));
+  // read the path text alone, whatever repository a caller supplies, and the
+  // home they compare against is the host's. A Claude Code state folder is not
+  // decoded either: that asks the host's disk, which is not here. The
+  // session-start record or an existing note places those sessions first.
+  const host = hostSettings(env);
+  const foreign = Boolean(host);
   const repoOf = foreign ? () => NO_REPO : resolveRepoFor;
-  const decoded = decodeClaudeStateCwd(cwd, { home, tmp });
-  const shared = { vaultRoot, home, holdsHarness };
+  const decoded = foreign ? '' : decodeClaudeStateCwd(cwd, { home, tmp });
+  const shared = { vaultRoot, home: foreign ? host.home : home, holdsHarness };
   // The repository of the cwd the rules read: resolved here only when the caller
   // did not already, or when decoding moved to another folder.
   const context = decoded

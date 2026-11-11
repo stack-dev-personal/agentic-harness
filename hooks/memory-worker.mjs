@@ -8,6 +8,7 @@ import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoi
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { acquirePathLock, releaseRealmLock } from './lib/realm-lock.mjs';
@@ -75,6 +76,12 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     // flavor): the worker must not look healthy while it captures nothing.
     if (gate.reason === PERSISTENCE_DISABLED) return { disabled: true, failed: 0 };
     log(`memory worker blocked: ${gate.reason}; nothing was captured or ingested`);
+    return { disabled: true, failed: 1 };
+  }
+  // Under a host path flavor the host's home and vault are part of the
+  // configuration: without them filing would read this process's own home.
+  try { hostSettings(loaded); } catch (error) {
+    log(`memory worker blocked: ${error.message}; nothing was captured or ingested`);
     return { disabled: true, failed: 1 };
   }
   installExtraRulesFrom(loaded, log);

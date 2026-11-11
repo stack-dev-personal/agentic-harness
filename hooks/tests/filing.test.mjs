@@ -13,9 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { captureSession } from '../lib/capture.mjs';
 import { FilingConflictError, fileSession } from '../lib/filing.mjs';
+import { parseFrontmatter } from '../lib/frontmatter.mjs';
 import { readSessionStartPlacement, writeSessionStartRecord } from '../lib/session-start.mjs';
-import { createSandbox } from './helpers/sandbox.mjs';
+import { collectionsHolding, createSandbox } from './helpers/sandbox.mjs';
 
 const OWN = '11111111-1111-4111-8111-111111111111';
 const PARENT = '22222222-2222-4222-8222-222222222222';
@@ -129,5 +131,84 @@ test('in the container a Windows session lands where the host record put it, wit
     const placed = file(w, { cwd: 'C:\\Users\\alex\\projects\\bb2dash-wt-x', env: FLAVOR, resolveRepoFor: refuse });
     assert.deepEqual(where(placed), ['projects', 'bb2dash', 'git', 'record']);
     assert.equal(placed.repo.repoFullName, '');
+  } finally { w.cleanup(); }
+});
+
+// ------------------------------------------------------- wired into capture
+
+function captureWorld() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'filing-capture-'));
+  const vaultRoot = path.join(root, 'vault');
+  const cwd = path.join(root, 'demo');
+  const stateDir = path.join(root, 'state', 'session-start');
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(vaultRoot);
+  const entries = [
+    { type: 'user', timestamp: '2026-11-03T12:00:00Z', cwd, origin: { kind: 'human' }, message: { content: 'Remember the tested decision.' } },
+    { type: 'assistant', timestamp: '2026-11-03T12:00:01Z', cwd, message: { content: [{ type: 'text', text: 'Use one shared store.' }] } },
+  ];
+  const run = (input, extra = {}) => captureSession({ vaultRoot, entries, stateDir, env: { USERPROFILE: root },
+    input: { cwd, endReason: 'resume', ...input }, runGit: () => ({ status: 0, stdout: '' }), ...extra });
+  return { root, vaultRoot, stateDir, run, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('a session whose note was moved is merged where the note now is, never copied back', () => {
+  const w = captureWorld();
+  try {
+    const first = w.run({ sessionId: OWN });
+    assert.equal(first.written, true, first.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `${OWN}.md`), ['projects/demo']);
+    const moved = path.join(w.vaultRoot, 'classes', 'ist323', 'sessions');
+    fs.mkdirSync(moved, { recursive: true });
+    fs.renameSync(first.notePath, path.join(moved, `${OWN}.md`));
+    const again = w.run({ sessionId: OWN, endReason: 'clear' });
+    assert.equal(again.written, true, again.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `${OWN}.md`), ['classes/ist323']);
+  } finally { w.cleanup(); }
+});
+
+test('a new session is filed where its session-start record placed it', () => {
+  const w = captureWorld();
+  try {
+    writeSessionStartRecord({ stateDir: w.stateDir, record: { at: '2026-11-03T11:59:00.000Z', sessionId: OWN, cwd: 'x',
+      realm: 'classes', collection: 'ist323', collectionSource: 'folder', source: 'none', externalIds: [], tokens: 0 } });
+    const result = w.run({ sessionId: OWN });
+    assert.equal(result.written, true, result.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `${OWN}.md`), ['classes/ist323']);
+  } finally { w.cleanup(); }
+});
+
+test('a session with notes in two folders is refused and nothing is written', () => {
+  const w = captureWorld();
+  try {
+    for (const folder of ['projects/demo', 'classes/ist323']) {
+      fs.mkdirSync(path.join(w.vaultRoot, folder, 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(w.vaultRoot, folder, 'sessions', `${OWN}.md`), '---\nid: x\n---\n');
+    }
+    const result = w.run({ sessionId: OWN });
+    assert.equal(result.written, false);
+    assert.match(result.skip, /notes in 2 folders/);
+  } finally { w.cleanup(); }
+});
+
+test('a delegated Codex thread files beside its parent: by the parent note, then by an ancestor record', () => {
+  const w = captureWorld();
+  try {
+    const input = { sessionId: `codex-${OWN}`, parentSession: `codex-${PARENT}`, ancestorSessions: [PARENT, GRANDPARENT] };
+    writeSessionStartRecord({ stateDir: w.stateDir, record: { at: '2026-11-03T11:59:00.000Z', sessionId: GRANDPARENT, cwd: 'x',
+      realm: 'classes', collection: 'ist323', collectionSource: 'folder', source: 'none', externalIds: [], tokens: 0 } });
+    const byAncestor = w.run(input, { runtime: 'codex', agent: 'codex', briefSessionId: OWN });
+    assert.equal(byAncestor.written, true, byAncestor.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `codex-${OWN}.md`), ['classes/ist323']);
+
+    // A second child of a parent that already has a note: the parent's note beats the older ancestor's record.
+    const sibling = '44444444-4444-4444-8444-444444444444';
+    const parentDir = path.join(w.vaultRoot, 'projects', 'bb2dash', 'sessions');
+    fs.mkdirSync(parentDir, { recursive: true });
+    fs.writeFileSync(path.join(parentDir, `codex-${PARENT}.md`), '---\nid: session-codex-x\ncollection_source: git\n---\n');
+    const byParent = w.run({ ...input, sessionId: `codex-${sibling}` }, { runtime: 'codex', agent: 'codex', briefSessionId: sibling });
+    assert.equal(byParent.written, true, byParent.skip);
+    assert.deepEqual(collectionsHolding(w.vaultRoot, `codex-${sibling}.md`), ['projects/bb2dash']);
+    assert.equal(parseFrontmatter(fs.readFileSync(byParent.notePath, 'utf8')).fields.collection_source, 'git');
   } finally { w.cleanup(); }
 });

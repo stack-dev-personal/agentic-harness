@@ -275,7 +275,9 @@ export function captureCodex({
   const policy = sessionMemoryEligibility({ input, env });
   if (!policy.allowed) return { ...skip(policy.reason), action: 'excluded' };
   if (input.hookEventName !== 'SessionEnd') return skip('not SessionEnd');
-  const native = captureCodexSqliteSession({ home, sessionId: input.sessionId, endReason: input.endReason,
+  // A worker reading another host's sessions never opens that host's live
+  // Codex database (a WAL database across a bind mount); the rollout serves.
+  const native = hostPathFlavor(env) ? null : captureCodexSqliteSession({ home, sessionId: input.sessionId, endReason: input.endReason,
     vaultRoot, env, deadlineAt, runGit, stateDir, capturedBy });
   if (native) return native;
   const transcriptPath = resolveCodexTranscript({ declaredPath: input.transcriptPath,

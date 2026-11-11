@@ -138,6 +138,28 @@ test('a turn that moved into the protected folder excludes the session, whatever
   assert.equal(result.action, 'excluded', result.skip);
 });
 
+test('under a flavor Codex capture never opens the host\'s Codex database, even when it is there', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-no-db-'));
+  try {
+    const vaultRoot = path.join(root, 'vault');
+    fs.mkdirSync(vaultRoot);
+    fs.mkdirSync(path.join(root, '.codex'));
+    // Not a database: opening it fails, so a capture that opened it would not be written.
+    fs.writeFileSync(path.join(root, '.codex', 'state_5.sqlite'), 'not a database');
+    const sessionId = randomUUID();
+    const transcriptPath = path.join(root, 'rollout.jsonl');
+    fs.writeFileSync(transcriptPath, [
+      { timestamp: at(0), type: 'session_meta', payload: { cwd: CWD } },
+      message('user', 'Fix the app.', at(1)),
+      message('assistant', 'Fixed.', at(9), 'final_answer'),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const result = captureCodex({ input: { sessionId, transcriptPath, cwd: CWD, hookEventName: 'SessionEnd', endReason: 'other' },
+      vaultRoot, home: root, env: { ...FLAVOR, HARNESS_MEMORY_STATE_DIR: path.join(root, 'state') },
+      stateDir: path.join(root, 'state', 'session-start'), runGit: () => ({ ok: false, stdout: '' }) });
+    assert.equal(result.written, true, `${result.action}: ${result.skip}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a file URL in a patch is still refused, not hidden behind the cwd', () => {
   const result = outcome([patchRecord('file://srv/share/private/x')]);
   assert.equal(result.action, 'excluded', result.skip);

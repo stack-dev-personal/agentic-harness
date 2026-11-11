@@ -6,8 +6,10 @@ import path from 'node:path';
 import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-adapters.mjs';
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
-import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
-import { loadMachineEnv } from './lib/machine-env.mjs';
+import { PERSISTENCE_DISABLED, memoryEligibility, sessionMemoryEligibility } from './lib/memory-policy.mjs';
+import { harnessDir, loadMachineEnv } from './lib/machine-env.mjs';
+import { hostPathFlavor } from './lib/host-paths.mjs';
+import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { acquirePathLock, releaseRealmLock } from './lib/realm-lock.mjs';
@@ -43,14 +45,21 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
   }
   const hermesHome = env.HARNESS_HERMES_HOME || (process.platform === 'win32'
     ? path.join(home, 'AppData', 'Local', 'hermes') : path.join(home, '.hermes'));
-  if (fs.existsSync(hermesHome)) {
+  if (hostPathFlavor(env)) {
+    // A worker reading another host's sessions does not read Hermes: its
+    // database is not mounted there, and its own session hook still captures.
+    candidates.capabilities.push({ runtime: 'hermes', available: false, installed: false, reason: 'not read under a host path flavor' });
+  } else if (fs.existsSync(hermesHome)) {
     try {
     const { discoverHermesSessions, readHermesSession, captureHermes } = await import('./hermes-session-capture.mjs');
     for (const candidate of discoverHermesSessions({ hermesHome, log })) {
       candidates.push({ ...candidate, runtime: 'hermes', capture: ({ deadlineAt }) => {
         const policy = memoryEligibility({ input: { ...candidate, runtime: 'hermes' }, env });
         if (!policy.allowed) return { written: false, action: 'excluded', touchedPaths: [] };
-        return withRealmLocks({ cwd: candidate.cwd, vaultRoot, log, owner: 'memory checkpoint' }, () => {
+        return withRealmLocks({ cwd: candidate.cwd, vaultRoot, log, owner: 'memory checkpoint', env,
+          // A delegate is filed beside its parent or an older ancestor: lock their realms too.
+          sessions: [candidate.sessionId, candidate.parentSession, ...(candidate.ancestorSessions || [])]
+            .filter(Boolean).map((sessionId) => ({ sessionId })) }, () => {
           const { snapshot } = readHermesSession({ hermesHome, sessionId: candidate.nativeSessionId, env });
           return captureHermes({ snapshot, vaultRoot, env, deadlineAt, capturedBy: 'sweep' });
         }, () => ({ written: false, action: 'deferred', touchedPaths: [] }));
@@ -62,6 +71,23 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
     candidates.capabilities.push({ runtime: 'hermes', available: false, installed: false });
   }
   return candidates;
+}
+
+/**
+ * What `--preview` says about one session: where it would be filed and why
+ * (`basis`: note, record, parent or rules), or only that it is excluded. Folder
+ * names and ids, never content, so host and container previews can be diffed.
+ */
+function previewOf(candidate, env) {
+  const base = { runtime: candidate.runtime, sessionId: candidate.sessionId };
+  if (candidate.input && !sessionMemoryEligibility({ input: { ...candidate.input, runtime: candidate.runtime }, env }).allowed) return { ...base, excluded: true };
+  if (typeof candidate.place !== 'function') return base;
+  try {
+    const { area, collection, basis } = candidate.place();
+    return { ...base, area, collection, basis };
+  } catch (error) {
+    return { ...base, conflict: error.message };
+  }
 }
 
 /** All hooks use the same queue. Legacy queue names are drained during migration. */
@@ -77,9 +103,15 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     log(`memory worker blocked: ${gate.reason}; nothing was captured or ingested`);
     return { disabled: true, failed: 1 };
   }
+  // Under a host path flavor the host's home and vault are part of the
+  // configuration: without them filing would read this process's own home.
+  try { hostSettings(loaded); } catch (error) {
+    log(`memory worker blocked: ${error.message}; nothing was captured or ingested`);
+    return { disabled: true, failed: 1 };
+  }
   installExtraRulesFrom(loaded, log);
   const vaultRoot = loaded.HARNESS_VAULT || path.join(home, 'vault');
-  const stateDir = path.join(home, '.harness');
+  const stateDir = harnessDir(home);
   fs.mkdirSync(stateDir, { recursive: true });
   const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
   if (!lock.ok) return { busy: true, failed: 0 };
@@ -87,8 +119,8 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const before = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log });
     const legacy = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log, queueName: 'codex-ingest-queue.jsonl' });
     const candidates = suppliedCandidates ?? await discoverMemorySessions({ home, vaultRoot, stateDir, env: loaded, preview, log });
-    if (preview) return { candidates: candidates.map(({ runtime, sessionId }) => ({ runtime, sessionId })), failed: 0 };
-    const result = checkpointSessions({ candidates, vaultRoot, stateDir, log });
+    if (preview) return { candidates: candidates.map((candidate) => previewOf(candidate, loaded)), failed: 0 };
+    const result = checkpointSessions({ candidates, vaultRoot, stateDir, log, env: loaded });
     const counts = { 'claude-code': 0, codex: 0, hermes: 0 };
     for (const candidate of candidates) counts[candidate.runtime] = (counts[candidate.runtime] || 0) + 1;
     log(`checkpoint: runtimes=${JSON.stringify(counts)} eligible=${result.eligible} written=${result.written} excluded=${result.excluded} unsupported=${result.unsupported} errors=${result.errors} deferred=${result.deferred}`);
@@ -96,7 +128,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
       const queued = queue({ notePaths: result.touchedPaths, vaultRoot, env: loaded, log, startTask: false });
       if (!queued.queued) throw new Error('checkpoint queue handoff failed; capture will retry');
     }
-    saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints: result.checkpoints });
+    saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints: result.checkpoints, env: loaded });
     const after = drain({ env: loaded, log });
     const capabilities = candidates.capabilities || [];
     const discoveryFailures = capabilities.filter(item => !item.available && item.installed !== false).length;
@@ -110,10 +142,10 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const log = createLogger(path.join(os.homedir(), '.harness', 'memory-worker.log'));
+  const log = createLogger(path.join(harnessDir(), 'memory-worker.log'));
   try {
     const healthOnly = process.argv.includes('--health');
-    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(os.homedir(), '.harness', 'memory-health.json'), 'utf8'))
+    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8'))
       : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
     if (healthOnly && Date.now() - Date.parse(result.checkedAt) > 15 * 60_000) result.failed = (result.failed || 0) + 1;
     if (healthOnly || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');

@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url';
 
 import { DISABLE_VALUES } from './constants.mjs';
 import { ENV_ENABLED, ingestEntry, inBatches, resolveProjectDir, resolveUv } from './enqueue-ingest.mjs';
-import { loadMachineEnv } from './machine-env.mjs';
+import { harnessDir, loadMachineEnv } from './machine-env.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './memory-policy.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
+import { hostSettings } from './host-settings.mjs';
+import { fromVaultRelative, relativeToKey, toVaultRelative, vaultKeyOf } from './vault-relative.mjs';
 import { persist } from './notes-io.mjs';
 
 export const TASK_NAME = 'AgenticHarness-Memory';
@@ -21,7 +23,7 @@ const INGEST_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_DRAIN_PASSES = 10;
 
 function queuePath(env, queueName = QUEUE_NAME) {
-  return path.join(env.USERPROFILE || os.homedir(), '.harness', queueName);
+  return path.join(harnessDir(env.USERPROFILE || os.homedir()), queueName);
 }
 
 function isVaultNote(file, vaultRoot) {
@@ -30,6 +32,26 @@ function isVaultNote(file, vaultRoot) {
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || path.extname(file).toLowerCase() !== '.md' || !fs.existsSync(file)) return false;
   const realRelative = path.relative(fs.realpathSync(vaultRoot), fs.realpathSync(file));
   return realRelative && !realRelative.startsWith('..') && !path.isAbsolute(realRelative);
+}
+
+/**
+ * One queue line: the note's path inside the vault, `/`-separated, so the
+ * host and a container that mounts the same vault at another path read each
+ * other's entries.
+ */
+function queueLine(note, vaultRoot) {
+  return JSON.stringify({ note: toVaultRelative(note, vaultRoot) });
+}
+
+/** The note a queue line names, as this side's path; '' when it names none this side may ingest. */
+function noteFromLine(entry, vaultRoot, env) {
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) return fromVaultRelative(entry.note, vaultRoot);
+  if (typeof entry !== 'string') return '';
+  if (isVaultNote(entry, vaultRoot)) return entry;
+  // Written before entries were vault-relative, by the host this worker reads for.
+  const host = hostSettings(env);
+  // Text only, as `C:\Users\x\vault\a\b.md` -> `a/b.md`; a device or share spelling is not mapped.
+  return host ? fromVaultRelative(relativeToKey(entry, vaultKeyOf(host.vault)), vaultRoot) : '';
 }
 
 /**
@@ -54,7 +76,7 @@ export function queueIngest({ notePaths, vaultRoot, env = process.env, log = () 
     if (!notes.length) return { queued: false, reason: 'no vault notes' };
     const file = queuePath(env, queueName);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, notes.map((note) => JSON.stringify(path.resolve(note))).join('\n') + '\n');
+    fs.appendFileSync(file, notes.map((note) => queueLine(note, vaultRoot)).join('\n') + '\n');
     if (!startTask || DISABLE_VALUES.has(String(env.HARNESS_MEMORY_START_WORKER ?? '').toLowerCase())) return { queued: true, taskStarted: false, notes: notes.length };
     if (process.platform !== 'win32') {
       const worker = fileURLToPath(new URL('../memory-worker.mjs', import.meta.url));
@@ -86,8 +108,8 @@ function readQueuedNotes(file, vaultRoot, env) {
   const rejected = [];
   for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
     try {
-      const note = JSON.parse(line);
-      if (!isVaultNote(note, vaultRoot)) throw new Error('queued note unavailable');
+      const note = noteFromLine(JSON.parse(line), vaultRoot, env);
+      if (!note || !isVaultNote(note, vaultRoot)) throw new Error('queued note unavailable');
       assertNoteEligible(note, env);
       notes.add(note);
     } catch { rejected.push(line); }

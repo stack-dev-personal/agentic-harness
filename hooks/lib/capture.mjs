@@ -15,6 +15,7 @@
 import path from 'node:path';
 
 import { analyseTranscript } from './analyse.mjs';
+import { FilingConflictError } from './filing.mjs';
 import {
   BUDGET_MS,
   CAPTURED_BY_HOOK,
@@ -81,13 +82,15 @@ export function captureSession({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
-  stateDir = defaultStateDir(process.env),
+  stateDir,
   entries: suppliedEntries,
   agent = 'unknown', runtime = agent, model = '', provider = '', origin,
   generator, parentSession, childSessions, promptTask,
   briefSessionId = input.sessionId,
   env = process.env,
 }) {
+  // The start-record folder of the env this capture judges by (machine.env included), as the lock reads it.
+  stateDir ??= defaultStateDir(env);
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
   if (!isSafeFilenameSegment(input.sessionId)) return skip('invalid session id');
   if ((parentSession || input.parentSession) && !isSafeFilenameSegment(parentSession || input.parentSession)) return skip('invalid parent session id');
@@ -126,16 +129,25 @@ export function captureSession({
   const touched = sessionMemoryEligibility({ input, env, paths: [...entryPaths(entries), ...accumulator.files.keys(), ...accumulator.filesRead.keys()] });
   if (!touched.allowed) return { ...skip(touched.reason), action: 'excluded' };
 
-  const facts = analyseTranscript({
-    entries,
-    prompts,
-    cwd: input.cwd,
-    transcriptPath,
-    vaultRoot,
-    deadlineAt,
-    runGit,
-    into: accumulator,
-  });
+  let facts;
+  try {
+    facts = analyseTranscript({
+      entries,
+      prompts,
+      cwd: input.cwd,
+      transcriptPath,
+      vaultRoot,
+      deadlineAt,
+      runGit,
+      into: accumulator,
+      env,
+      filing: { sessionId: input.sessionId, briefSessionId, ancestors: ancestorsOf(input, runtime), stateDir },
+    });
+  } catch (error) {
+    // Two notes for one session: picking one would hide the other's history.
+    if (error instanceof FilingConflictError) return skip(error.message);
+    throw error;
+  }
 
   const concluded = input.endReason !== RESUME_REASON;
 
@@ -208,6 +220,22 @@ export function captureSession({
 
   const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, SESSIONS_DIR);
   return writeNote({ context, sessionsDir, area: facts.area, collection: facts.collection, vaultRoot });
+}
+
+/**
+ * The parent, then older ancestors, as filing looks them up: by the id their
+ * note is named by and the id their start record is keyed by. A Codex note is
+ * `codex-<thread id>`; its record and the adapter's ancestor list use the bare
+ * thread id.
+ */
+function ancestorsOf(input, runtime) {
+  const ids = [input.parentSession, ...(Array.isArray(input.ancestorSessions) ? input.ancestorSessions : [])]
+    .filter((id) => typeof id === 'string' && id);
+  return ids.map((id) => {
+    if (runtime !== 'codex') return { sessionId: id, briefSessionId: id };
+    const bare = id.replace(/^codex-/, '');
+    return { sessionId: `codex-${bare}`, briefSessionId: bare };
+  });
 }
 
 // -------------------------------------------------------------- the write

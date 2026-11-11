@@ -94,10 +94,18 @@ export function pathWithin(root, file) {
   return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+/**
+ * Every place the entries name, for the policy: each distinct folder an entry
+ * ran in, whether or not it used a tool there (a turn that only talked, or ran
+ * a shell command, in a protected folder was there), then each tool path with
+ * the folder it was recorded in.
+ */
 export function entryPaths(entries) {
-  return entries.flatMap(entry => (Array.isArray(entry.message?.content) ? entry.message.content : [])
+  const folders = [...new Set(entries.map(entry => entry?.cwd).filter(cwd => cwd !== undefined && cwd !== null && cwd !== ''))];
+  const tools = entries.flatMap(entry => (Array.isArray(entry.message?.content) ? entry.message.content : [])
     .filter(block => block.type === 'tool_use').flatMap(block => ['file_path', 'notebook_path', 'path']
       .filter(key => typeof block.input?.[key] === 'string').map(key => ({ path: block.input[key], cwd: entry.cwd }))));
+  return [...folders.map(cwd => ({ cwd })), ...tools];
 }
 
 export function memoryEligibility({ input = {}, env = process.env, paths = [] } = {}) {

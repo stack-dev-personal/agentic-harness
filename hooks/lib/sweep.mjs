@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { capture } from './capture.mjs';
-import { routeSession } from './collection.mjs';
+import { filingAreas } from './filing.mjs';
 import { acquireRealmLock, describeHolder, holderAgeMinutes, lockPathFor, REALM_LOCK_STALE_MS, releaseRealmLock } from './realm-lock.mjs';
 import { realmRootFor } from './realm-sync.mjs';
 import { defaultStateDir } from './session-start.mjs';
@@ -293,7 +293,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = underRealmLocks({ candidate, vaultRoot, excludes, log }, () =>
+        const result = underRealmLocks({ candidate, vaultRoot, excludes, log, stateDir }, () =>
           sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir }));
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
@@ -341,11 +341,12 @@ export const SWEEP_LOCK_OWNER = 'transcript sweep';
  * realm checkout has no lock, and the capture runs as before. An excluded cwd
  * is skipped by `sweepOne` without a lock.
  */
-function underRealmLocks({ candidate, vaultRoot, excludes, log }, work) {
+function underRealmLocks({ candidate, vaultRoot, excludes, log, stateDir }, work) {
   const head = readTranscriptHead(candidate.transcriptPath);
   const projectDirName = path.basename(path.dirname(candidate.transcriptPath));
   if (excludedBy(head.cwd, excludes, projectDirName)) return work();
-  return withRealmLocks({ cwd: head.cwd, vaultRoot, log }, work,
+  // The same start-record folder the capture files by.
+  return withRealmLocks({ cwd: head.cwd, vaultRoot, log, stateDir, sessions: [{ sessionId: candidate.sessionId }] }, work,
     (name, acquired) => deferredResult(candidate, name, acquired, log));
 }
 
@@ -354,10 +355,10 @@ function underRealmLocks({ candidate, vaultRoot, excludes, log }, work) {
  * to; when one is held, release what was taken and return
  * `onDeferred(realmName, acquired)` instead. Shared with the Codex sweep.
  */
-export function withRealmLocks({ cwd, vaultRoot, log = () => {}, owner = SWEEP_LOCK_OWNER }, work, onDeferred) {
+export function withRealmLocks({ cwd, vaultRoot, log = () => {}, owner = SWEEP_LOCK_OWNER, sessions, env = process.env, stateDir }, work, onDeferred) {
   const taken = [];
   try {
-    for (const { root, name } of realmsFor(cwd, vaultRoot)) {
+    for (const { root, name } of realmsFor(cwd, vaultRoot, { sessions, env, stateDir })) {
       const acquired = acquireRealmLock(root, { owner, pid: process.pid, now: new Date() });
       if (!acquired.ok) return onDeferred(name, acquired);
       if (acquired.takenOver) {
@@ -374,15 +375,18 @@ export function withRealmLocks({ cwd, vaultRoot, log = () => {}, owner = SWEEP_L
   }
 }
 
-/** The lockable realm roots a session from `cwd` may write to, deduplicated, in AREAS order. */
-function realmsFor(cwd, vaultRoot) {
+/**
+ * The lockable realm roots a session from `cwd` may write to, deduplicated, in
+ * AREAS order. With `sessions` (the ids the capture files by), the realm of
+ * each one's existing note or start record is taken too: filing writes there
+ * before it asks the rules (filing.mjs).
+ */
+function realmsFor(cwd, vaultRoot, { sessions = [], env = process.env, stateDir = defaultStateDir(env) } = {}) {
   let areas = AREAS;
   if (cwd) {
-    try {
-      areas = [routeSession({ cwd, vaultRoot }).area];
-    } catch {
-      areas = AREAS; // Unroutable: every realm, as for a head with no cwd.
-    }
+    // Unroutable, or a session in two folders: every realm, as for a head with no cwd.
+    const filed = filingAreas({ cwd, vaultRoot, sessions, env, stateDir });
+    areas = filed ? AREAS.filter((area) => filed.includes(area)) : AREAS;
   }
   const seen = new Set();
   const realms = [];

@@ -42,7 +42,10 @@ const EMPTY = Object.freeze({
  */
 export function resolveRepo(cwd) {
   const start = toPosix(cwd);
-  if (!start || !isLocalPath(start)) return EMPTY;
+  // A path this platform does not read as absolute (a relative one, or a
+  // Windows path read on Linux) would be walked up from the process's own
+  // folder and end at its `./.git`: a checkout that has nothing to do with it.
+  if (!start || !isLocalPath(start) || !path.isAbsolute(start)) return EMPTY;
 
   const found = findGitEntry(start);
   if (!found) return EMPTY;

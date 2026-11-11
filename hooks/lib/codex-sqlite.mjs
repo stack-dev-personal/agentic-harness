@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import { captureSession } from './capture.mjs';
 import { openNativeDatabase } from './native-sqlite.mjs';
-import { hostPathFlavor, isUnplaceableDevicePath } from './host-paths.mjs';
+import { hostPathFlavor, isUnplaceableDevicePath, joinHostPath } from './host-paths.mjs';
 import { sessionMemoryEligibility } from './memory-policy.mjs';
 import { parseRagResult } from './rag-result.mjs';
 import { isSafeFilenameSegment, toPosix } from './text.mjs';
@@ -163,7 +163,11 @@ function humanText(content) {
 }
 
 /** Normalize only supported content; raw reasoning, output, and patch diffs are omitted. */
-function entriesFromItems(rows, thread, ownTask) {
+function entriesFromItems(rows, thread, ownTask, { env = process.env } = {}) {
+  // Under a host path flavor tool paths keep their recorded spelling (toPosix
+  // strips device prefixes) and relative ones are joined as Windows text.
+  const flavor = Boolean(hostPathFlavor(env));
+  const asRecorded = flavor ? (value) => String(value) : toPosix;
   const cwd = toPosix(thread.cwd || '');
   const entries = [{ type: 'progress', timestamp: iso(thread.created_at_ms), cwd }];
   if (ownTask) entries.push({ type: 'user', origin: { kind: 'human' }, timestamp: iso(thread.created_at_ms), cwd, message: { content: ownTask } });
@@ -178,7 +182,7 @@ function entriesFromItems(rows, thread, ownTask) {
       const text = humanText(item.content);
       if (text) entries.push({ type: 'user', origin: { kind: 'human' }, timestamp, cwd, message: { content: text } });
       const images = Array.isArray(item.content) ? item.content.filter(block => block?.type === 'localImage' && typeof block.path === 'string') : [];
-      if (images.length) entries.push({ type: 'assistant', timestamp, cwd, message: { content: images.map((image, index) => ({ type: 'tool_use', id: `${item.id}:image:${index}`, name: 'Read', input: { file_path: toPosix(image.path) } })) } });
+      if (images.length) entries.push({ type: 'assistant', timestamp, cwd, message: { content: images.map((image, index) => ({ type: 'tool_use', id: `${item.id}:image:${index}`, name: 'Read', input: { file_path: asRecorded(image.path) } })) } });
       continue;
     }
     if (item.type === 'agentMessage' && (item.phase == null || ['final', 'final_answer', 'partial_answer'].includes(item.phase))) {
@@ -189,13 +193,14 @@ function entriesFromItems(rows, thread, ownTask) {
     if (item.type === 'commandExecution' && typeof item.command === 'string') content.push({ type: 'tool_use', id: item.id,
       name: 'PowerShell', input: { command: item.command } });
     if (item.type === 'imageView' && typeof item.path === 'string') content.push({ type: 'tool_use', id: item.id,
-      name: 'Read', input: { file_path: toPosix(item.path) } });
+      name: 'Read', input: { file_path: asRecorded(item.path) } });
     if (item.type === 'fileChange' && Array.isArray(item.changes)) {
       for (const [index, change] of item.changes.entries()) {
         if (typeof change?.path !== 'string') continue;
-        const changePath = toPosix(change.path);
-        content.push({ type: 'tool_use', id: `${item.id}:${index}`,
-          name: 'Write', input: { file_path: path.isAbsolute(changePath) ? changePath : path.resolve(cwd, changePath) } });
+        const changePath = asRecorded(change.path);
+        const absolute = flavor ? joinHostPath(thread.cwdRaw || thread.cwd || '', changePath)
+          : path.isAbsolute(changePath) ? changePath : path.resolve(cwd, changePath);
+        content.push({ type: 'tool_use', id: `${item.id}:${index}`, name: 'Write', input: { file_path: absolute } });
       }
     }
     if (item.type === 'mcpToolCall' && typeof item.server === 'string' && typeof item.tool === 'string') {
@@ -339,7 +344,7 @@ function captureNative({ thread, threads, parentById, stateFile, historyFile, va
     if (parent && !recorded && !rows.length) return skip('subagent did nothing; assignment not recorded');
     if (parent && !recorded) log(PLACEHOLDER_LOG);
     const ownTask = parent ? (recorded || placeholderAssignment(thread)) : '';
-    const entries = entriesFromItems(rows, thread, ownTask);
+    const entries = entriesFromItems(rows, thread, ownTask, { env });
     if (Date.now() >= deadlineAt) return skip('capture budget spent');
     const children = [...parentById.entries()].filter(([, parentId]) => parentId === thread.id).map(([id]) => `session-${qualify(id)}`);
     return captureSession({ input: { ...input, sessionId: qualify(thread.id), parentSession: parent ? qualify(parent) : '', endReason },

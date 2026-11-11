@@ -11,6 +11,7 @@
 
 import path from 'node:path';
 
+import { hostPathFlavor } from './host-paths.mjs';
 import { resolveRepo } from './repo.mjs';
 import { isLocalPath, toPosix, uniqueCapped } from './text.mjs';
 
@@ -59,7 +60,9 @@ export function isNoisePath(candidate) {
  * A session touches sixty files in a handful of directories; without the cache
  * that is sixty walks up the tree, with it a handful.
  */
-export function makeRepoResolver() {
+export function makeRepoResolver({ env = process.env } = {}) {
+  // Session paths from another host name no checkout on this disk.
+  if (hostPathFlavor(env)) return () => null;
   const cache = new Map();
   return function repoFor(filePath) {
     const dir = toPosix(path.dirname(toPosix(filePath)));

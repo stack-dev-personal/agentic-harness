@@ -25,7 +25,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { analyseTranscript } from './analyse.mjs';
-import { placeSession } from './collection.mjs';
+import { FILED_BY_RULES, FilingConflictError, fileSession } from './filing.mjs';
+import { defaultStateDir } from './session-start.mjs';
 import {
   BUDGET_MS,
   CAPTURED_BY_HOOK,
@@ -87,6 +88,7 @@ export function captureSubagent({
   capturedBy = CAPTURED_BY_HOOK,
   log = () => {},
   env = process.env,
+  stateDir = defaultStateDir(env),
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
   input = { ...input, runtime: 'claude-code' };
@@ -129,13 +131,21 @@ export function captureSubagent({
     deadlineAt,
     runGit,
     into: accumulator,
+    env,
   });
 
   const agentType = redact(String(input.agentType || meta.agentType || '')).slice(0, MAX_LABEL_CHARS);
 
   const date = isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString());
 
-  const placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot, log });
+  let placement;
+  try {
+    placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot, log, env, stateDir });
+  } catch (error) {
+    // The parent has notes in two folders: either choice would hide the other.
+    if (error instanceof FilingConflictError) return skip(error.message);
+    throw error;
+  }
   const { current, notePath: targetPath } = placement;
   if (current.error) {
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
@@ -298,8 +308,8 @@ const NO_NOTE = Object.freeze({ fields: null, body: '', error: '', stub: false }
  *            parentStartedAt: string, parentRepo: string,
  *            parentPhase: string, basis: string}}
  */
-function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log }) {
-  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
+function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log, env, stateDir }) {
+  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot, env, stateDir });
   const home = fromParent
     ? { area: fromParent.area, collection: fromParent.collection, collectionSource: fromParent.collectionSource }
     : { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
@@ -404,25 +414,32 @@ function inheritFromParent(facts, placement) {
  * transcript is never taken for its parent's. `readHead` is injectable so a
  * test can count the reads.
  */
-export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHead = readTranscriptHead }) {
+export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHead = readTranscriptHead, env = process.env, stateDir }) {
   const own = toPosix(agentTranscriptPath);
   const named = [parentTranscriptBeside(agentTranscriptPath, input.sessionId), input.transcriptPath].map(toPosix);
   const candidates = [...new Set(named)].filter((candidate) => candidate && candidate !== own);
-  for (const candidate of candidates) {
-    const { cwd, timestamp = '' } = readHead(candidate);
-    if (!cwd) continue;
-    const { placement, repo } = placeSession({ cwd, vaultRoot });
-    const repoFullName = repo?.repoFullName ?? '';
+  // The parent files as a session does (filing.mjs): its own note, wherever it
+  // is, then its start record, then the rules on its transcript's cwd.
+  const fileParent = (cwd) => fileSession({ sessionId: input.sessionId, cwd, vaultRoot, env, stateDir });
+  const describe = (placement, timestamp) => {
+    const repoFullName = placement.repo?.repoFullName ?? '';
     return {
       area: placement.area,
       collection: placement.collection,
       collectionSource: placement.collectionSource,
       timestamp,
       repo: repoFullName,
-      phase: derivePhase({ branch: repo?.branch ?? '', repo: repoFullName }),
+      phase: derivePhase({ branch: placement.repo?.branch ?? '', repo: repoFullName }),
     };
+  };
+  for (const candidate of candidates) {
+    const { cwd, timestamp = '' } = readHead(candidate);
+    if (!cwd) continue;
+    return describe(fileParent(cwd), timestamp);
   }
-  return null;
+  // No parent transcript says where it ran: its note or record still does.
+  const filed = fileParent('');
+  return filed.basis === FILED_BY_RULES ? null : describe(filed, '');
 }
 
 /**

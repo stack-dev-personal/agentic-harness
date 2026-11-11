@@ -348,14 +348,14 @@ export async function buildStartBrief({
   };
 
   const { placement } = placeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor, holdsHarness });
-  const { area: realm, collection, rule } = placement;
+  const { area: realm, collection, collectionSource, rule } = placement;
   const relativeFolder = `${realm}/${collection}`;
   const folder = path.join(vaultRoot, realm, collection);
   checkDeadline();
   const known = await io.isDirectory(folder);
   checkDeadline();
 
-  const base = { realm, collection, known, rule };
+  const base = { realm, collection, collectionSource, known, rule };
   const result = (source, text, externalIds, notes) => ({ ...base, source, text, externalIds, tokens: estimateTokens(text), notes });
   if (!known) return result('none', '', [], []);
 

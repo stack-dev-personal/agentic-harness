@@ -53,11 +53,21 @@ test('writes exactly the SC-2 keys to <stateDir>/<session_id>.json, creating the
     cwd: 'C:/Users/estac/agentic-harness',
     realm: 'harness',
     collection: 'agentic-harness',
+    collection_source: '',
     source: 'outcomes',
     external_ids: ['session-aaaa', 'session-bbbb'],
     tokens: 812,
   });
   assert.deepEqual(fs.readdirSync(stateDir), [`${SESSION}.json`], 'no temp file left behind');
+});
+
+test('collection_source keeps how the placement was decided, and only a known value', (t) => {
+  const { stateDir } = tempState(t);
+  for (const [given, kept] of [['git', 'git'], ['folder', 'folder'], ['guess', ''], [undefined, '']]) {
+    const written = writeSessionStartRecord({ record: { ...input(), collectionSource: given }, stateDir });
+    assert.equal(written.ok, true, written.reason);
+    assert.equal(JSON.parse(fs.readFileSync(written.path, 'utf8')).collection_source, kept, String(given));
+  }
 });
 
 test('round trip: what the writer writes, P\'s reader turns into one SC-1 entry', (t) => {

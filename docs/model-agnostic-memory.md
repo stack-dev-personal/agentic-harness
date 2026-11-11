@@ -112,7 +112,12 @@ $env:HARNESS_MEMORY_EXCLUDED_ROOTS = '["C:/private-work"]'
 
 The global switch blocks harness capture, recall, ingestion and brief records.
 Protected-root checks resolve relative paths in the session/entry working
-directory and follow junctions. Neither secret redaction nor a label-scanning
+directory and follow junctions. Every folder a transcript entry ran in is
+judged, not only the files its tools named: a turn that only talked, or ran a
+shell command, inside a protected folder excludes the session. A Codex turn's
+own working directory (`turn_context`) is the one its later entries carry and
+its relative paths are joined to. Not judged: the `workdir` argument of a
+shell tool call, and paths inside a shell command's text. Neither secret redaction nor a label-scanning
 regular expression establishes that arbitrary content is unrestricted.
 
 ### Judging another operating system's paths
@@ -168,6 +173,57 @@ The rules live twice, in `hooks/lib/host-paths.mjs` and
 `ingest/src/ingest/memory_policy.py`, and must give the same answer for the same
 text. Neither borrows from its standard library, because `path.win32` and
 `ntpath` disagree. Change both together and run both test files.
+
+A relative tool path from such a session is joined to its working directory
+with `joinHostPath` (same file): the cwd is read by the same rules, the file is
+appended as written, and anything that is not a plainly relative file under a
+full cwd is left for the policy to judge as recorded.
+
+### Filing and shared state between the host and the container
+
+A worker reading another host's sessions cannot open that host's checkouts, so
+where a note goes no longer depends on them first. `hooks/lib/filing.mjs`
+decides, on the host and in the container alike:
+
+1. the folder of an existing note for the session, anywhere in the vault;
+2. the session-start record (`~/.harness/state/session-start/<id>.json`), which
+   the host wrote with the checkout in reach;
+3. the same two for the parent session, then older ancestors (Claude Code
+   subagents, delegated Codex threads);
+4. the routing rules on the path text.
+
+A session id with notes in two folders is refused and counted as an error until
+the copies are merged by hand. The realm locks cover every folder this order may
+write to. Under a flavor no checkout is read at all, so a note first written in
+the container has empty `repo`, `branch` and `commits`, and Claude Code
+state-folder cwds are not decoded (decoding lists the host's disk).
+
+Under a flavor two more settings are required, each a plain drive path:
+
+| Variable | Example | Used for |
+| --- | --- | --- |
+| `HARNESS_HOST_HOME` | `C:/Users/name` | the home-relative routing rules (`~/.claude`, `~/projects`) |
+| `HARNESS_HOST_VAULT` | `C:/Users/name/vault` | the checkpoint-state key, and old absolute queue entries |
+
+The worker also skips Hermes and never opens the Codex database under a flavor;
+Codex rollout files cover those sessions.
+
+State the host and the container share through one `~/.harness`:
+
+- **Ingest queue** lines are `{"note": "<area>/<collection>/sessions/<id>.md"}`,
+  joined to the reading side's vault. Old absolute lines are still read on the
+  side that wrote them, and under a flavor by the `HARNESS_HOST_VAULT` prefix.
+  Anything else stays in the queue for review.
+- **`memory-checkpoints.json`** is version 2: one entry per vault, keyed by the
+  vault root as the host spells it, note paths stored inside the vault, every
+  other vault kept on save. A version 1 file is migrated on the next save.
+- **Cutover switch.** `HARNESS_MEMORY_START_WORKER=0` in the host's
+  `machine.env` keeps queueing notes but stops the host hooks starting the
+  scheduled task; the container worker drains the queue.
+
+`memory-worker --preview` lists, for each session, the folder filing would use
+and why (`basis`: note, record, parent or rules), or only that it is excluded.
+Run it on the host and in the container and compare.
 
 These controls govern the harness. They cannot undo native transcript writes or
 remote model requests that already occurred. Before restricted work, each native

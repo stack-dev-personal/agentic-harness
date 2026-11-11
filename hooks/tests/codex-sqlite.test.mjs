@@ -543,3 +543,47 @@ test('a delegate is looked at again when its parent records a collab item', () =
     assert.doesNotMatch(raw, /assignment not recorded/);
   } finally { f.close(); }
 });
+
+// ------------------- a Windows host's database read under a host path flavor
+
+const WINDOWS_APP = String.raw`C:\Users\alex\projects\app`;
+function flavorEnv(f) {
+  return { ...f.env, HARNESS_HOST_PATH_FLAVOR: 'win32', HARNESS_HOST_HOME: 'C:/Users/alex', HARNESS_HOST_VAULT: 'C:/Users/alex/vault',
+    HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify(['C:/Users/alex/private-work']) };
+}
+function windowsThread(f, changePath, cwd = WINDOWS_APP) {
+  f.thread('main', { cwd }); f.turn('main');
+  f.item('main', { type: 'userMessage', content: [{ type: 'text', text: 'Fix the app.' }] }, 1);
+  f.item('main', { type: 'fileChange', changes: [{ path: changePath, kind: 'update' }] }, 2);
+  f.item('main', { type: 'agentMessage', text: 'Fixed.', phase: 'final_answer' }, 3);
+}
+
+test('under a flavor a relative file change in a Windows thread is joined as text and captured', () => {
+  const f = fixture();
+  try {
+    windowsThread(f, String.raw`src\a.mjs`);
+    const outcome = captureCodexSqliteSession({ ...f.options, env: flavorEnv(f), sessionId: 'main', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+    assert.match(fs.readFileSync(outcome.notePath, 'utf8'), /C:\/Users\/alex\/projects\/app\/src\/a\.mjs/);
+  } finally { f.close(); }
+});
+
+test('under a flavor a relative file change that climbs into the protected folder excludes the thread', () => {
+  const f = fixture();
+  try {
+    windowsThread(f, String.raw`..\..\private-work\brief.md`);
+    const outcome = captureCodexSqliteSession({ ...f.options, env: flavorEnv(f), sessionId: 'main', deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.action, 'excluded', outcome.skip);
+  } finally { f.close(); }
+});
+
+test('under a flavor a device-prefixed thread cwd, as Codex records it, joins like a plain one', () => {
+  for (const change of [String.raw`.\src\a.mjs`, String.raw`..\lib\b.mjs`, String.raw`src\a.mjs`]) {
+    const f = fixture();
+    try {
+      windowsThread(f, change, '\\\\?\\' + WINDOWS_APP);
+      const outcome = captureCodexSqliteSession({ ...f.options, env: flavorEnv(f), sessionId: 'main', deadlineAt: Date.now() + 3000 });
+      assert.equal(outcome.written, true, `${change}: ${outcome.action} ${outcome.skip}`);
+    } finally { f.close(); }
+  }
+});

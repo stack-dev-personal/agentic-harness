@@ -346,6 +346,30 @@ export function hostPathWithin(flavor, root, file, cwd = '') {
   return couldLandIn(rootAt, namesOf(target));
 }
 
+/**
+ * A tool path recorded by a Windows session, made absolute against the
+ * working directory it ran in, as text. The cwd is read by this file's own
+ * rules (`plain`: device prefix, separators, Unix-shell drive spellings), the
+ * way `hostPathWithin` reads it, and the file is appended exactly as written,
+ * so the policy applies its `..`, short names and every other spelling itself.
+ *
+ * Only a plainly relative file is joined, and only to a cwd that is a full
+ * path. A file that names its own drive, root, share, device, home or URL is
+ * returned as it is, and so is any file whose cwd is missing, not full, or not
+ * placeable: the policy then judges both as recorded and refuses what it
+ * cannot place. Native `path.resolve` must not be used for these: on Linux it
+ * reads `C:/x` as relative and puts it under the process's own folder.
+ */
+export function joinHostPath(cwd, file) {
+  const text = String(file);
+  if (text === '' || /^[A-Za-z]:/.test(text) || /^[\\/~]/.test(text) || FILE_SCHEME.test(text)) return text;
+  let base;
+  try { base = plain(String(cwd ?? '')); } catch { return text; }
+  if (!isFull(base)) return text;
+  // `plain` has collapsed separator runs, so at most one trails.
+  return `${base.endsWith('\\') ? base.slice(0, -1) : base}\\${text}`;
+}
+
 function assertFlavor(flavor) {
   if (!SUPPORTED.includes(flavor)) throw new RangeError(`unsupported host path flavor: ${flavor}`);
 }

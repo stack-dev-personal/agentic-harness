@@ -9,6 +9,7 @@ import { analyseTranscript } from './lib/analyse.mjs';
 import { isSubagentHead, readCodexHead, resolveCodexTranscript } from './lib/codex-head.mjs';
 import { captureSession } from './lib/capture.mjs';
 import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
+import { hostPathFlavor, joinHostPath } from './lib/host-paths.mjs';
 import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
 import { queueIngest } from './lib/ingest-queue.mjs';
 import { MAIN_TRANSCRIPT_MAX_BYTES, RESERVE_MS, RESUME_REASON, SESSIONS_DIR, STATUS_ACTIVE, STATUS_CONCLUDED, VAULT_ENV_VAR } from './lib/constants.mjs';
@@ -70,16 +71,19 @@ function toolUse(id, name, input) {
   return { type: 'tool_use', id, name, input };
 }
 
+/** This platform's own rules: right for a session recorded where it is read. */
+const nativeJoin = (cwd, raw) => (path.isAbsolute(raw) ? raw : path.resolve(cwd, raw));
+
 const PATCH_FILE_LINE = /^\*\*\* (?:Add|Update|Delete|Move to) File: (.+)$/gm;
 
 /** The files a decoded apply_patch body names, as `Write` uses; nothing else of the patch is kept. */
-function patchFileUses(patch, idPrefix, cwd, startIndex) {
+function patchFileUses(patch, idPrefix, cwd, startIndex, joinPath = nativeJoin) {
   const uses = [];
   for (const match of patch.matchAll(PATCH_FILE_LINE)) {
     const raw = match[1].trim();
     if (!raw) continue;
     uses.push(toolUse(`${idPrefix}:edit:${startIndex + uses.length}`, 'Write', {
-      file_path: path.isAbsolute(raw) ? raw : path.resolve(cwd, raw),
+      file_path: joinPath(cwd, raw),
     }));
   }
   return uses;
@@ -127,7 +131,7 @@ function toJsonBody(body) {
 }
 
 /** Read only literal tool inputs from a Codex code-mode call. Never evaluate its JS. */
-function nestedUses(script, callId, cwd) {
+function nestedUses(script, callId, cwd, joinPath) {
   const uses = [];
   for (const match of script.matchAll(/tools\.exec_command\s*\(/g)) {
     const source = script.slice(match.index, match.index + 2000);
@@ -139,7 +143,7 @@ function nestedUses(script, callId, cwd) {
   for (const match of script.matchAll(/tools\.apply_patch\s*\(\s*/g)) {
     // Only a literal patch can be read; its body never reaches the note.
     const patch = literalArgument(script.slice(match.index + match[0].length));
-    if (patch) uses.push(...patchFileUses(patch, callId, cwd, uses.length));
+    if (patch) uses.push(...patchFileUses(patch, callId, cwd, uses.length, joinPath));
   }
   const rag = [...script.matchAll(/tools\.mcp__rag__(search_context|get_document)\s*\(/g)];
   if (rag.length === 1) {
@@ -169,7 +173,14 @@ function ragResultText(output, tool) {
 }
 
 /** Keep human prompts and final answers only. Tool inputs and outputs stay out of the note. */
-export function extractCodexTurns(records, cwd) {
+export function extractCodexTurns(records, sessionCwd, { env = process.env } = {}) {
+  // A Windows session read on another platform is joined as Windows text.
+  const flavored = Boolean(hostPathFlavor(env));
+  const joinPath = flavored ? joinHostPath : nativeJoin;
+  // Each turn records the folder it ran in. Later entries carry it, so the
+  // policy judges it, and their relative paths join to it, not to the folder
+  // the session started in.
+  let cwd = sessionCwd;
   const entries = [];
   const ragCalls = new Map();
   let origin = 'codex';
@@ -178,6 +189,12 @@ export function extractCodexTurns(records, cwd) {
     if (record?.type === 'session_meta') {
       if (typeof payload?.originator === 'string') origin = payload.originator.slice(0, 80);
       entries.push({ type: 'progress', timestamp: record.timestamp, cwd });
+    }
+    if (record?.type === 'turn_context' && typeof payload?.cwd === 'string' && payload.cwd) {
+      cwd = flavored ? payload.cwd : toPosix(payload.cwd);
+      // Recorded even when nothing follows in this turn: being there is enough.
+      entries.push({ type: 'progress', timestamp: record.timestamp, cwd });
+      continue;
     }
     if (record?.type !== 'response_item') continue;
     if (payload?.type === 'function_call' || payload?.type === 'custom_tool_call') {
@@ -191,10 +208,10 @@ export function extractCodexTurns(records, cwd) {
       }
       if (name === 'apply_patch') {
         const patch = typeof payload.input === 'string' ? payload.input : String(args.patch ?? '');
-        uses.push(...patchFileUses(patch, id, cwd, uses.length));
+        uses.push(...patchFileUses(patch, id, cwd, uses.length, joinPath));
       }
       if (payload.type === 'custom_tool_call' && typeof payload.input === 'string') {
-        const nested = nestedUses(payload.input, id, cwd);
+        const nested = nestedUses(payload.input, id, cwd, joinPath);
         uses.push(...nested.uses);
         if (nested.ragId) ragCalls.set(id, nested);
       } else if (name.startsWith('mcp__rag__')) {
@@ -270,12 +287,14 @@ export function captureCodex({
   const child = isSubagentHead(head);
   if (child && !allowSubagent) return skip('subagent transcript');
   if (child && !ownTask) return skip('child task unavailable; inherited context excluded');
-  const cwd = toPosix(head.payload?.cwd || input.cwd);
+  // Under a host path flavor the policy judges the cwd as recorded; toPosix
+  // would strip a device prefix before it is seen.
+  const cwd = hostPathFlavor(env) ? String(head.payload?.cwd || input.cwd || '') : toPosix(head.payload?.cwd || input.cwd);
   let records = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt);
   if (!records.length) return skip('transcript unreadable or empty');
   if (child) records = records.filter(record => record.timestamp >= head.timestamp);
   if (records[0]?.type !== 'session_meta') records.unshift(head);
-  const parsed = extractCodexTurns(records, cwd);
+  const parsed = extractCodexTurns(records, cwd, { env });
   if (child) {
     parsed.entries = parsed.entries.filter(entry => entry.type !== 'user' || Array.isArray(entry.message?.content));
     parsed.entries.unshift({ type: 'user', origin: { kind: 'human' }, timestamp: head.timestamp, cwd, message: { content: ownTask } });

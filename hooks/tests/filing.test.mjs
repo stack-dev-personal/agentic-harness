@@ -17,7 +17,9 @@ import { captureSession } from '../lib/capture.mjs';
 import { FilingConflictError, fileSession } from '../lib/filing.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
 import { readSessionStartPlacement, writeSessionStartRecord } from '../lib/session-start.mjs';
-import { collectionsHolding, createSandbox } from './helpers/sandbox.mjs';
+import { captureSubagent } from '../lib/subagent.mjs';
+import { collectionsHolding, createSandbox, expand, installTranscript, noGit } from './helpers/sandbox.mjs';
+import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
 
 const OWN = '11111111-1111-4111-8111-111111111111';
 const PARENT = '22222222-2222-4222-8222-222222222222';
@@ -211,4 +213,56 @@ test('a delegated Codex thread files beside its parent: by the parent note, then
     assert.deepEqual(collectionsHolding(w.vaultRoot, `codex-${sibling}.md`), ['projects/bb2dash']);
     assert.equal(parseFrontmatter(fs.readFileSync(byParent.notePath, 'utf8')).fields.collection_source, 'git');
   } finally { w.cleanup(); }
+});
+
+// ------------------------------------------------------ subagent workers
+
+const WORKER_PARENT = SCENARIOS.find((scenario) => scenario.name === 'subagent-parent');
+
+function stopWorker(sandbox, transcriptPath, stateDir) {
+  return captureSubagent({
+    input: { sessionId: WORKER_PARENT.sessionId, endReason: 'other', hookEventName: 'SubagentStop',
+      cwd: expand(WORKER_PARENT.cwd, sandbox), transcriptPath, agentId: 'c0ffee01', agentType: '', agentTranscriptPath: '', parentSession: '' },
+    vaultRoot: sandbox.vaultRoot, projectsRoot: sandbox.projectsRoot, runGit: noGit, stateDir,
+  });
+}
+
+test('a worker files beside its parent note where that note now is, not where the parent cwd routes', () => {
+  const sandbox = createSandbox();
+  try {
+    const parent = runScenario(sandbox, WORKER_PARENT);
+    assert.equal(parent.written, true, parent.skip);
+    const moved = path.join(sandbox.vaultRoot, 'classes', 'ist323', 'sessions');
+    fs.renameSync(parent.notePath, path.join(moved, `${WORKER_PARENT.sessionId}.md`));
+    const transcriptPath = path.join(sandbox.transcriptsDir, `${WORKER_PARENT.sessionId}.jsonl`);
+    const worker = stopWorker(sandbox, transcriptPath);
+    assert.equal(worker.written, true, worker.skip);
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${WORKER_PARENT.sessionId}--c0ffee01.md`), ['classes/ist323']);
+  } finally { sandbox.cleanup(); }
+});
+
+test('a worker whose parent has no note yet files where the parent start record placed it', () => {
+  const sandbox = createSandbox();
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filing-worker-'));
+  try {
+    const transcriptPath = installTranscript(sandbox, WORKER_PARENT.fixture, WORKER_PARENT.sessionId);
+    writeSessionStartRecord({ stateDir, record: { at: '2026-11-03T11:59:00.000Z', sessionId: WORKER_PARENT.sessionId, cwd: 'x',
+      realm: 'classes', collection: 'ist323', collectionSource: 'folder', source: 'none', externalIds: [], tokens: 0 } });
+    const worker = stopWorker(sandbox, transcriptPath, stateDir);
+    assert.equal(worker.written, true, worker.skip);
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${WORKER_PARENT.sessionId}--c0ffee01.md`), ['classes/ist323']);
+  } finally { sandbox.cleanup(); fs.rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test('a worker whose parent has notes in two folders is refused', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installTranscript(sandbox, WORKER_PARENT.fixture, WORKER_PARENT.sessionId);
+    for (const folder of ['projects/bb2dash', 'classes/ist323']) {
+      fs.writeFileSync(path.join(sandbox.vaultRoot, folder, 'sessions', `${WORKER_PARENT.sessionId}.md`), '---\nid: x\n---\n');
+    }
+    const worker = stopWorker(sandbox, transcriptPath);
+    assert.equal(worker.written, false);
+    assert.match(worker.skip, /notes in 2 folders/);
+  } finally { sandbox.cleanup(); }
 });

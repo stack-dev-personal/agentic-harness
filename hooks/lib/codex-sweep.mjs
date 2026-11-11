@@ -8,6 +8,7 @@ import { RESUME_REASON } from './constants.mjs';
 import { describeHolder, holderAgeMinutes } from './realm-lock.mjs';
 import { indexNotedSessions, withRealmLocks } from './sweep.mjs';
 import { isSafeFilenameSegment } from './text.mjs';
+import { harnessDir } from './machine-env.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 20 * HOUR_MS;
@@ -42,7 +43,7 @@ function readCheckpoints(stateDir, vaultRoot) {
 }
 
 /** Commit only after changed notes have been durably queued for ingestion. */
-export function saveCodexCheckpoints({ stateDir = path.join(os.homedir(), '.harness'), vaultRoot, checkpoints }) {
+export function saveCodexCheckpoints({ stateDir = harnessDir(), vaultRoot, checkpoints }) {
   const file = path.join(stateDir, 'codex-checkpoints.json');
   const transcripts = { ...readCheckpoints(stateDir, vaultRoot), ...checkpoints };
   fs.mkdirSync(stateDir, { recursive: true });
@@ -63,7 +64,7 @@ export function saveCodexCheckpoints({ stateDir = path.join(os.homedir(), '.harn
  */
 export function sweepCodex({ home = os.homedir(), vaultRoot, capture, now = Date.now(),
   checkpoint = false, minIdleMs = checkpoint ? 0 : IDLE_MS,
-  stateDir = path.join(home, '.harness'), force = false, log = () => {},
+  stateDir = harnessDir(home), force = false, log = () => {},
   budgetMs = SWEEP_BUDGET_MS, clock = Date.now }) {
   const marker = path.join(stateDir, 'codex-sweep-last.txt');
   if (!checkpoint && !force && fs.existsSync(marker) && now - fs.statSync(marker).mtimeMs < SWEEP_INTERVAL_MS) {

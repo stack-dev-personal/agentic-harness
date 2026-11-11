@@ -17,7 +17,14 @@ import { MACHINE_NAME_PATTERN, MACHINE_NAME_VAR, VAULT_ENV_VAR } from './constan
 
 /** Overrides the file's location — the tests use it; a VM may too. */
 export const MACHINE_ENV_VAR = 'HARNESS_MACHINE_ENV';
-export const MACHINE_ENV_SEGMENTS = Object.freeze(['.harness', 'machine.env']);
+/** The harness's own folder under home: state, logs, queue, machine file. */
+export const HARNESS_DIR = '.harness';
+export const MACHINE_ENV_SEGMENTS = Object.freeze([HARNESS_DIR, 'machine.env']);
+
+/** `<home>/.harness`, the one spelling of it. A container mounts the host's folder there. */
+export function harnessDir(home = os.homedir()) {
+  return path.join(home, HARNESS_DIR);
+}
 
 const KEY = /^[A-Z_][A-Z0-9_]*$/;
 

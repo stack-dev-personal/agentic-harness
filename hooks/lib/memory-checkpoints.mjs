@@ -1,10 +1,10 @@
 /** Incremental capture is shared; adapters supply native discovery and parsing. */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { hostSettings } from './host-settings.mjs';
 import { persist } from './notes-io.mjs';
 import { fromVaultRelative, relativeToKey, toVaultRelative, vaultKeyOf } from './vault-relative.mjs';
+import { harnessDir } from './machine-env.mjs';
 
 /**
  * Bumped whenever an adapter learns to write a thread it used to report as
@@ -59,7 +59,7 @@ function readState(stateDir, vaultRoot, env) {
     paths: (Array.isArray(checkpoint?.paths) ? checkpoint.paths : []).map((file) => fromVaultRelative(file, vaultRoot)) }));
 }
 
-export function saveMemoryCheckpoints({ stateDir = path.join(os.homedir(), '.harness'), vaultRoot, checkpoints, env = process.env }) {
+export function saveMemoryCheckpoints({ stateDir = harnessDir(), vaultRoot, checkpoints, env = process.env }) {
   const vaults = loadVaults(stateDir);
   const key = vaultKey(vaultRoot, env);
   const fresh = mapValues(checkpoints, (checkpoint) => storedCheckpoint(checkpoint, (file) => toVaultRelative(file, vaultRoot)));
@@ -69,7 +69,7 @@ export function saveMemoryCheckpoints({ stateDir = path.join(os.homedir(), '.har
 }
 
 /** The caller commits fingerprints only after every successful candidate has a durable queue entry. */
-export function checkpointSessions({ candidates, vaultRoot, stateDir = path.join(os.homedir(), '.harness'),
+export function checkpointSessions({ candidates, vaultRoot, stateDir = harnessDir(),
   budgetMs = 15 * 60 * 1000, clock = Date.now, log = () => {}, env = process.env }) {
   const saved = readState(stateDir, vaultRoot, env);
   const result = { scanned: 0, eligible: 0, written: 0, errors: 0, excluded: 0, unsupported: 0, deferred: 0, truncated: false, touchedPaths: [], checkpoints: {} };

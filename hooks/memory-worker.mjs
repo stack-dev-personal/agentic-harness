@@ -7,7 +7,7 @@ import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-ada
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
-import { loadMachineEnv } from './lib/machine-env.mjs';
+import { harnessDir, loadMachineEnv } from './lib/machine-env.mjs';
 import { hostPathFlavor } from './lib/host-paths.mjs';
 import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
@@ -92,7 +92,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
   }
   installExtraRulesFrom(loaded, log);
   const vaultRoot = loaded.HARNESS_VAULT || path.join(home, 'vault');
-  const stateDir = path.join(home, '.harness');
+  const stateDir = harnessDir(home);
   fs.mkdirSync(stateDir, { recursive: true });
   const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
   if (!lock.ok) return { busy: true, failed: 0 };
@@ -123,10 +123,10 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const log = createLogger(path.join(os.homedir(), '.harness', 'memory-worker.log'));
+  const log = createLogger(path.join(harnessDir(), 'memory-worker.log'));
   try {
     const healthOnly = process.argv.includes('--health');
-    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(os.homedir(), '.harness', 'memory-health.json'), 'utf8'))
+    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8'))
       : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
     if (healthOnly && Date.now() - Date.parse(result.checkedAt) > 15 * 60_000) result.failed = (result.failed || 0) + 1;
     if (healthOnly || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');

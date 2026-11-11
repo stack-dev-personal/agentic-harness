@@ -6,9 +6,10 @@ import { readCodexHead, isSubagentHead } from './codex-head.mjs';
 import { RESUME_REASON } from './constants.mjs';
 import { withRealmLocks } from './sweep.mjs';
 import { isSafeFilenameSegment } from './text.mjs';
+import { harnessDir } from './machine-env.mjs';
 
 export function captureChangedCodex({ home = os.homedir(), vaultRoot, capture, queue,
-  stateDir = path.join(home, '.harness'), log = () => {}, budgetMs = 120000 }) {
+  stateDir = harnessDir(home), log = () => {}, budgetMs = 120000 }) {
   const stateFile = path.join(stateDir, 'codex-cadence.json');
   let state = {};
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DISABLE_VALUES } from './constants.mjs';
 import { ENV_ENABLED, ingestEntry, inBatches, resolveProjectDir, resolveUv } from './enqueue-ingest.mjs';
-import { loadMachineEnv } from './machine-env.mjs';
+import { harnessDir, loadMachineEnv } from './machine-env.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './memory-policy.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { hostSettings } from './host-settings.mjs';
@@ -23,7 +23,7 @@ const INGEST_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_DRAIN_PASSES = 10;
 
 function queuePath(env, queueName = QUEUE_NAME) {
-  return path.join(env.USERPROFILE || os.homedir(), '.harness', queueName);
+  return path.join(harnessDir(env.USERPROFILE || os.homedir()), queueName);
 }
 
 function isVaultNote(file, vaultRoot) {

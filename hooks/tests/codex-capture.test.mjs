@@ -48,7 +48,7 @@ test('macOS SessionEnd queues notes for the launchd worker without a detached in
     });
     assert.equal(result.status, 0, result.stderr);
     const queued = fs.readFileSync(path.join(root, '.harness', 'memory-ingest-queue.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.ok(queued.includes(path.join(vaultRoot, 'projects', 'demo', 'sessions', `codex-${sessionId}.md`)));
+    assert.ok(queued.some((entry) => entry.note === `projects/demo/sessions/codex-${sessionId}.md`), JSON.stringify(queued));
     assert.ok(!fs.existsSync(path.join(root, '.claude', 'hooks', 'ingest-on-capture.log')));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

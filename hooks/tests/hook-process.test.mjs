@@ -184,7 +184,7 @@ test('with the enqueue enabled, the real process asks for an ingest and says so'
     assert.ok(fs.existsSync(pending), 'the hook hands work to the durable queue');
     const queued = fs.readFileSync(pending, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(queued.length, 1);
-    assert.match(queued[0], /11111111-1111-4111-8111-111111111111\.md$/);
+    assert.match(queued[0].note, /^projects\/[^/]+\/sessions\/11111111-1111-4111-8111-111111111111\.md$/);
     assert.equal(fs.existsSync(runLog), false, 'capture does not start an untracked detached ingest');
   } finally {
     sandbox.cleanup();

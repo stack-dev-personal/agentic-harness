@@ -17,6 +17,7 @@ import { routeSession } from '../lib/collection.mjs';
 import { hostSettings } from '../lib/host-settings.mjs';
 import { makeRepoResolver } from '../lib/paths.mjs';
 import { resolveRepo } from '../lib/repo.mjs';
+import { writeSessionStartRecord } from '../lib/session-start.mjs';
 import { discoverMemorySessions, runMemoryWorker } from '../memory-worker.mjs';
 import { createSandbox } from './helpers/sandbox.mjs';
 
@@ -154,5 +155,34 @@ test('under a flavor Hermes and the Codex database are off by design, reported a
       { runtime: 'hermes', available: false, installed: false, reason: 'not read under a host path flavor' });
     assert.deepEqual(found.capabilities.find((item) => item.runtime === 'codex'), { runtime: 'codex', available: true });
     assert.equal(found.length, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// ------------------------------------- the preview shows where each session files
+
+test('--preview lists where each session would be filed, and only that an excluded one is excluded', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-preview-'));
+  try {
+    const filed = '55555555-5555-4555-8555-555555555555';
+    const hidden = '66666666-6666-4666-8666-666666666666';
+    const demo = path.join(home, 'demo');
+    const privateWork = path.join(home, 'private-work');
+    const projects = path.join(home, '.claude', 'projects', 'demo');
+    for (const dir of [demo, privateWork, projects, path.join(home, 'vault')]) fs.mkdirSync(dir, { recursive: true });
+    const transcript = (cwd) => [
+      { type: 'user', cwd, timestamp: new Date().toISOString(), message: { content: 'Record the decision.' } },
+      { type: 'assistant', cwd, timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'Recorded.' }] } },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n';
+    fs.writeFileSync(path.join(projects, `${filed}.jsonl`), transcript(demo));
+    fs.writeFileSync(path.join(projects, `${hidden}.jsonl`), transcript(path.join(privateWork, 'briefs')));
+    const stateRoot = path.join(home, 'state');
+    writeSessionStartRecord({ stateDir: path.join(stateRoot, 'session-start'), record: { at: new Date().toISOString(), sessionId: filed,
+      cwd: demo, realm: 'classes', collection: 'ist323', collectionSource: 'folder', source: 'none', externalIds: [], tokens: 0 } });
+    const env = { USERPROFILE: home, HARNESS_VAULT: path.join(home, 'vault'), HARNESS_MACHINE_ENV: path.join(home, 'absent.env'),
+      HARNESS_STATE_DIR: stateRoot, HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([privateWork]), HARNESS_MEMORY_STATE_DIR: path.join(home, 'exclusions') };
+    const result = await runMemoryWorker({ home, env, preview: true, log: () => {} });
+    const byId = Object.fromEntries(result.candidates.map((item) => [item.sessionId, item]));
+    assert.deepEqual(byId[filed], { runtime: 'claude-code', sessionId: filed, area: 'classes', collection: 'ist323', basis: 'record' });
+    assert.deepEqual(byId[hidden], { runtime: 'claude-code', sessionId: hidden, excluded: true });
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

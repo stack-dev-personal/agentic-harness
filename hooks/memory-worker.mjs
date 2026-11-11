@@ -6,7 +6,7 @@ import path from 'node:path';
 import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-adapters.mjs';
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
-import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
+import { PERSISTENCE_DISABLED, memoryEligibility, sessionMemoryEligibility } from './lib/memory-policy.mjs';
 import { harnessDir, loadMachineEnv } from './lib/machine-env.mjs';
 import { hostPathFlavor } from './lib/host-paths.mjs';
 import { hostSettings } from './lib/host-settings.mjs';
@@ -71,6 +71,23 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
   return candidates;
 }
 
+/**
+ * What `--preview` says about one session: where it would be filed and why
+ * (`basis`: note, record, parent or rules), or only that it is excluded. Folder
+ * names and ids, never content, so host and container previews can be diffed.
+ */
+function previewOf(candidate, env) {
+  const base = { runtime: candidate.runtime, sessionId: candidate.sessionId };
+  if (candidate.input && !sessionMemoryEligibility({ input: { ...candidate.input, runtime: candidate.runtime }, env }).allowed) return { ...base, excluded: true };
+  if (typeof candidate.place !== 'function') return base;
+  try {
+    const { area, collection, basis } = candidate.place();
+    return { ...base, area, collection, basis };
+  } catch (error) {
+    return { ...base, conflict: error.message };
+  }
+}
+
 /** All hooks use the same queue. Legacy queue names are drained during migration. */
 export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
   preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
@@ -100,7 +117,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const before = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log });
     const legacy = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log, queueName: 'codex-ingest-queue.jsonl' });
     const candidates = suppliedCandidates ?? await discoverMemorySessions({ home, vaultRoot, stateDir, env: loaded, preview, log });
-    if (preview) return { candidates: candidates.map(({ runtime, sessionId }) => ({ runtime, sessionId })), failed: 0 };
+    if (preview) return { candidates: candidates.map((candidate) => previewOf(candidate, loaded)), failed: 0 };
     const result = checkpointSessions({ candidates, vaultRoot, stateDir, log, env: loaded });
     const counts = { 'claude-code': 0, codex: 0, hermes: 0 };
     for (const candidate of candidates) counts[candidate.runtime] = (counts[candidate.runtime] || 0) + 1;

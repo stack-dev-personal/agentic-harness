@@ -460,6 +460,39 @@ test('an extended-length native cwd is normalized before the path policy and the
   } finally { f.close(); }
 });
 
+test('a device path that hides where it leads refuses the session instead of being normalized', () => {
+  // Stripping the prefix from these would leave an ordinary-looking path
+  // (`X:/../C:/...`, or a relative `GLOBALROOT/...`) that no root matches.
+  for (const hidden of [
+    '\\\\.\\X:\\..\\C:\\Users\\someone\\private\\image.png',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\Users\\someone\\private\\image.png',
+    '\\\\.\\Global\\C:\\Users\\someone\\private\\image.png',
+    '\\\\.\\UNC\\.\\localhost\\C$\\Users\\someone\\private\\image.png',
+  ]) {
+    const f = fixture();
+    try {
+      mainItems(f);
+      f.item('main', { type: 'imageView', path: hidden }, 8);
+      const env = { ...f.env, HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([path.join(f.cwd, 'private')]) };
+      const result = discoverCodexSqliteSessions({ ...f.options, env })[0].capture({ deadlineAt: Date.now() + 3000 });
+      assert.equal(result.written, false, hidden);
+      assert.equal(result.action, 'excluded', hidden);
+      assert.deepEqual(fs.readdirSync(f.vaultRoot), [], hidden);
+    } finally { f.close(); }
+  }
+});
+
+test('an ordinary extended-length path beside a protected root is still captured', () => {
+  const f = fixture();
+  try {
+    mainItems(f);
+    f.item('main', { type: 'imageView', path: `\\\\?\\${path.join(f.cwd, 'public', 'image.png')}` }, 8);
+    const env = { ...f.env, HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([path.join(f.cwd, 'private')]) };
+    const result = discoverCodexSqliteSessions({ ...f.options, env })[0].capture({ deadlineAt: Date.now() + 3000 });
+    assert.equal(result.written, true, result.skip);
+  } finally { f.close(); }
+});
+
 test('a spawn edge without a delegated source or a recorded assignment is unsupported, not mislabelled', () => {
   const f = fixture();
   try {

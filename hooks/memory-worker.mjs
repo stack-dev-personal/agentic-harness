@@ -6,7 +6,7 @@ import path from 'node:path';
 import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-adapters.mjs';
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
-import { memoryEligibility } from './lib/memory-policy.mjs';
+import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { createLogger } from './lib/logger.mjs';
@@ -68,7 +68,15 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
 export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
   preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
   const loaded = loadMachineEnv(env, home, log);
-  if (!memoryEligibility({ env: loaded }).allowed) return { disabled: true, failed: 0 };
+  const gate = memoryEligibility({ env: loaded });
+  if (!gate.allowed) {
+    // Switched off on purpose is a clean no-op. Any other reason is a broken
+    // setting (a protected root this platform cannot read, an unknown path
+    // flavor): the worker must not look healthy while it captures nothing.
+    if (gate.reason === PERSISTENCE_DISABLED) return { disabled: true, failed: 0 };
+    log(`memory worker blocked: ${gate.reason}; nothing was captured or ingested`);
+    return { disabled: true, failed: 1 };
+  }
   installExtraRulesFrom(loaded, log);
   const vaultRoot = loaded.HARNESS_VAULT || path.join(home, 'vault');
   const stateDir = path.join(home, '.harness');

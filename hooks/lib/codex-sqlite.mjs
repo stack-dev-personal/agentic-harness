@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import { captureSession } from './capture.mjs';
 import { openNativeDatabase } from './native-sqlite.mjs';
+import { hostPathFlavor, isUnplaceableDevicePath } from './host-paths.mjs';
 import { sessionMemoryEligibility } from './memory-policy.mjs';
 import { parseRagResult } from './rag-result.mjs';
 import { isSafeFilenameSegment, toPosix } from './text.mjs';
@@ -100,7 +101,12 @@ function readThreadMetadata(state) {
   // Native paths are normalized at this boundary: Codex 0.166 records every cwd
   // as `\\?\C:\...`, which realpath cannot resolve and pathWithin never matches,
   // so the path policy could neither verify nor refuse the session.
-  for (const row of rows) row.cwd = toPosix(row.cwd || '');
+  for (const row of rows) {
+    // Asked of the raw text, before the prefix is gone (see structured paths).
+    row.cwdUnplaceable = isUnplaceableDevicePath(row.cwd || '');
+    row.cwdRaw = row.cwd || '';
+    row.cwd = toPosix(row.cwd || '');
+  }
   const threads = new Map(rows.map(row => [row.id, row]));
   const parentById = new Map();
   for (const row of state.prepare('SELECT parent_thread_id,child_thread_id FROM thread_spawn_edges').all()) parentById.set(row.child_thread_id, row.parent_thread_id);
@@ -235,16 +241,31 @@ function preflightPaths({ db, thread, parentById, historyFile, env, deadlineAt,
   const rows = db.prepare(PATH_SQL).all(thread.id, include, cwd, cwd, cwd, cwd, cwd, cwd, MAX_ROWS + 1);
   budget.rows += rows.length;
   if (budget.rows > MAX_ROWS) throw capability('structured paths exceed row budget');
+  // Under a path flavor the policy reads Windows text itself, device prefixes
+  // included, so it gets the paths as recorded. Natively they are normalized
+  // first (see readThreadMetadata). An unknown flavor is the policy's to refuse.
+  let flavor = null;
+  try { flavor = hostPathFlavor(env); } catch { /* refused below by the policy */ }
   const paths = [];
+  // `toPosix` drops a device prefix. For `\\?\C:\x` that loses nothing, but
+  // `\\.\X:\..\C:\x` or `\\?\GLOBALROOT\...` would turn into an ordinary-looking
+  // path that hides where it leads, so those refuse the session outright.
+  let unplaceable = thread.cwdUnplaceable === true;
+  // The thread's own folder, as recorded: its normalized form (the input's
+  // cwd) reads `\\.\UNC\\host\share` as a rooted path, the raw text does not.
+  if (flavor && thread.cwdRaw) paths.push(thread.cwdRaw);
   for (const item of rows) {
     if (typeof item.path !== 'string' || typeof item.cwd !== 'string') throw capability('invalid structured path metadata');
     budget.bytes += Buffer.byteLength(item.path, 'utf8') + Buffer.byteLength(item.cwd, 'utf8');
     if (budget.bytes > MAX_BYTES) throw capability('structured paths exceed capture budget');
+    if (isUnplaceableDevicePath(item.path) || isUnplaceableDevicePath(item.cwd)) unplaceable = true;
     // Item paths and cwds come raw from native JSON; see readThreadMetadata.
-    paths.push({ path: toPosix(item.path), cwd: toPosix(item.cwd) });
+    paths.push(flavor ? { path: item.path, cwd: item.cwd } : { path: toPosix(item.path), cwd: toPosix(item.cwd) });
   }
   if (Date.now() >= deadlineAt) throw capability('structured path policy budget exceeded');
-  return sessionMemoryEligibility({ input: baseInput(thread, parentById, historyFile), env, paths });
+  const decision = sessionMemoryEligibility({ input: baseInput(thread, parentById, historyFile), env, paths });
+  if (decision.allowed && unplaceable) return { allowed: false, reason: 'memory path policy could not be verified' };
+  return decision;
 }
 
 /** Sensitive child activity taints its ancestors before a parent body is loaded. */

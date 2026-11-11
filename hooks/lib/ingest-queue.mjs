@@ -11,6 +11,7 @@ import { loadMachineEnv } from './machine-env.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './memory-policy.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { hostSettings } from './host-settings.mjs';
+import { fromVaultRelative, relativeToKey, toVaultRelative, vaultKeyOf } from './vault-relative.mjs';
 import { persist } from './notes-io.mjs';
 
 export const TASK_NAME = 'AgenticHarness-Memory';
@@ -39,28 +40,7 @@ function isVaultNote(file, vaultRoot) {
  * other's entries.
  */
 function queueLine(note, vaultRoot) {
-  const relative = path.relative(path.resolve(vaultRoot), path.resolve(note));
-  return JSON.stringify({ note: relative.split(path.sep).join('/') });
-}
-
-/** `a/b/c.md` inside the vault as this side's path, or '' for anything that is not plainly that. */
-function fromVaultRelative(relative, vaultRoot) {
-  if (typeof relative !== 'string' || !relative || /[\\\0]/.test(relative) || relative.startsWith('/') || /^[A-Za-z]:/.test(relative)) return '';
-  const parts = relative.split('/');
-  if (parts.some((part) => part === '' || part === '.' || part === '..')) return '';
-  return path.join(vaultRoot, ...parts);
-}
-
-/**
- * An old entry written by a Windows host, `C:\Users\x\vault\a\b.md`, as the
- * part after the host's vault root (`a/b.md`); '' when it is not under it.
- * Text only: a device or share spelling is not mapped.
- */
-function underHostVault(text, hostVault) {
-  if (/^[\\/]{2}/.test(text)) return '';
-  const posix = text.replace(/\\/g, '/');
-  const prefix = `${hostVault.toLowerCase()}/`;
-  return posix.toLowerCase().startsWith(prefix) ? posix.slice(prefix.length) : '';
+  return JSON.stringify({ note: toVaultRelative(note, vaultRoot) });
 }
 
 /** The note a queue line names, as this side's path; '' when it names none this side may ingest. */
@@ -70,7 +50,8 @@ function noteFromLine(entry, vaultRoot, env) {
   if (isVaultNote(entry, vaultRoot)) return entry;
   // Written before entries were vault-relative, by the host this worker reads for.
   const host = hostSettings(env);
-  return host ? fromVaultRelative(underHostVault(entry, host.vault), vaultRoot) : '';
+  // Text only, as `C:\Users\x\vault\a\b.md` -> `a/b.md`; a device or share spelling is not mapped.
+  return host ? fromVaultRelative(relativeToKey(entry, vaultKeyOf(host.vault)), vaultRoot) : '';
 }
 
 /**

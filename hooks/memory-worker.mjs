@@ -101,7 +101,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const legacy = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log, queueName: 'codex-ingest-queue.jsonl' });
     const candidates = suppliedCandidates ?? await discoverMemorySessions({ home, vaultRoot, stateDir, env: loaded, preview, log });
     if (preview) return { candidates: candidates.map(({ runtime, sessionId }) => ({ runtime, sessionId })), failed: 0 };
-    const result = checkpointSessions({ candidates, vaultRoot, stateDir, log });
+    const result = checkpointSessions({ candidates, vaultRoot, stateDir, log, env: loaded });
     const counts = { 'claude-code': 0, codex: 0, hermes: 0 };
     for (const candidate of candidates) counts[candidate.runtime] = (counts[candidate.runtime] || 0) + 1;
     log(`checkpoint: runtimes=${JSON.stringify(counts)} eligible=${result.eligible} written=${result.written} excluded=${result.excluded} unsupported=${result.unsupported} errors=${result.errors} deferred=${result.deferred}`);
@@ -109,7 +109,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
       const queued = queue({ notePaths: result.touchedPaths, vaultRoot, env: loaded, log, startTask: false });
       if (!queued.queued) throw new Error('checkpoint queue handoff failed; capture will retry');
     }
-    saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints: result.checkpoints });
+    saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints: result.checkpoints, env: loaded });
     const after = drain({ env: loaded, log });
     const capabilities = candidates.capabilities || [];
     const discoveryFailures = capabilities.filter(item => !item.available && item.installed !== false).length;

@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { hostSettings } from './host-settings.mjs';
 import { persist } from './notes-io.mjs';
+import { fromVaultRelative, relativeToKey, toVaultRelative, vaultKeyOf } from './vault-relative.mjs';
 
 /**
  * Bumped whenever an adapter learns to write a thread it used to report as
@@ -13,23 +15,63 @@ import { persist } from './notes-io.mjs';
  */
 export const UNSUPPORTED_GENERATION = 2;
 
-function readState(stateDir, vaultRoot) {
-  try {
-    const state = JSON.parse(fs.readFileSync(path.join(stateDir, 'memory-checkpoints.json'), 'utf8'));
-    return state.vaultRoot === path.resolve(vaultRoot) ? state.checkpoints ?? {} : {};
-  } catch { return {}; }
+/**
+ * State file version 2: `{version: 2, vaults: {<key>: {checkpoints}}}`, each
+ * vault keyed by its root as the host spells it (`vaultKeyOf`) and each
+ * checkpoint's `paths` stored inside the vault (`area/collection/...`). The
+ * host and a container that mounts the same vault elsewhere then share one
+ * entry, and a save keeps every other vault's. Version 1 was
+ * `{vaultRoot, checkpoints}` with absolute paths; it is read as one vault.
+ */
+const STATE_FILE = 'memory-checkpoints.json';
+const STATE_VERSION = 2;
+
+/** This side's key for `vaultRoot`: under a host path flavor the host's own spelling. */
+function vaultKey(vaultRoot, env) {
+  const host = hostSettings(env);
+  return vaultKeyOf(host ? host.vault : path.resolve(vaultRoot));
 }
 
-export function saveMemoryCheckpoints({ stateDir = path.join(os.homedir(), '.harness'), vaultRoot, checkpoints }) {
-  const state = { vaultRoot: path.resolve(vaultRoot), checkpoints: { ...readState(stateDir, vaultRoot), ...checkpoints } };
-  const written = persist(path.join(stateDir, 'memory-checkpoints.json'), JSON.stringify(state));
+/** One checkpoint with each path in stored form; a path outside the vault is dropped. */
+function storedCheckpoint(checkpoint, toStored) {
+  const paths = Array.isArray(checkpoint?.paths) ? checkpoint.paths.map(toStored).filter(Boolean) : [];
+  return { ...checkpoint, paths };
+}
+
+function mapValues(object, map) {
+  return Object.fromEntries(Object.entries(object && typeof object === 'object' ? object : {}).map(([key, value]) => [key, map(value)]));
+}
+
+/** Every vault in the file, version 2 in shape whatever version it was written in. */
+function loadVaults(stateDir) {
+  let state;
+  try { state = JSON.parse(fs.readFileSync(path.join(stateDir, STATE_FILE), 'utf8')); } catch { return {}; }
+  if (state?.version === STATE_VERSION && state.vaults && typeof state.vaults === 'object' && !Array.isArray(state.vaults)) return state.vaults;
+  if (typeof state?.vaultRoot !== 'string') return {};
+  const key = vaultKeyOf(state.vaultRoot);
+  return { [key]: { checkpoints: mapValues(state.checkpoints, (checkpoint) => storedCheckpoint(checkpoint, (file) => relativeToKey(file, key))) } };
+}
+
+/** This vault's checkpoints, with paths as this side's own. */
+function readState(stateDir, vaultRoot, env) {
+  const stored = loadVaults(stateDir)[vaultKey(vaultRoot, env)]?.checkpoints;
+  return mapValues(stored, (checkpoint) => ({ ...checkpoint,
+    paths: (Array.isArray(checkpoint?.paths) ? checkpoint.paths : []).map((file) => fromVaultRelative(file, vaultRoot)) }));
+}
+
+export function saveMemoryCheckpoints({ stateDir = path.join(os.homedir(), '.harness'), vaultRoot, checkpoints, env = process.env }) {
+  const vaults = loadVaults(stateDir);
+  const key = vaultKey(vaultRoot, env);
+  const fresh = mapValues(checkpoints, (checkpoint) => storedCheckpoint(checkpoint, (file) => toVaultRelative(file, vaultRoot)));
+  const state = { version: STATE_VERSION, vaults: { ...vaults, [key]: { checkpoints: { ...vaults[key]?.checkpoints, ...fresh } } } };
+  const written = persist(path.join(stateDir, STATE_FILE), JSON.stringify(state));
   if (!written.ok) throw new Error(`checkpoint state write failed (${written.error})`);
 }
 
 /** The caller commits fingerprints only after every successful candidate has a durable queue entry. */
 export function checkpointSessions({ candidates, vaultRoot, stateDir = path.join(os.homedir(), '.harness'),
-  budgetMs = 15 * 60 * 1000, clock = Date.now, log = () => {} }) {
-  const saved = readState(stateDir, vaultRoot);
+  budgetMs = 15 * 60 * 1000, clock = Date.now, log = () => {}, env = process.env }) {
+  const saved = readState(stateDir, vaultRoot, env);
   const result = { scanned: 0, eligible: 0, written: 0, errors: 0, excluded: 0, unsupported: 0, deferred: 0, truncated: false, touchedPaths: [], checkpoints: {} };
   const deadline = clock() + budgetMs;
   for (const candidate of candidates) {

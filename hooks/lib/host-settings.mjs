@@ -27,7 +27,7 @@ function hostFolder(env, name) {
   if (!raw) throw new RangeError(`${name} is required when a host path flavor is set`);
   const segments = raw.slice(3).split(/[\\/]/).filter(Boolean);
   if (!DRIVE_PATH.test(raw) || raw.includes('\0') || segments.some((part) => part === '.' || part === '..' || part.includes(':'))) {
-    throw new RangeError(`${name} must be a plain drive path such as C:/Users/name`);
+    throw new RangeError(`${name} must be a plain drive path such as C:/Users/...`);
   }
   return `${raw[0].toUpperCase()}:/${segments.join('/')}`;
 }

@@ -438,7 +438,11 @@ test('child own-thread path preflight does not inspect inherited userMessage ima
   } finally { f.close(); }
 });
 
-test('an extended-length native cwd is normalized before the path policy and the note', () => {
+// Native Windows behaviour: `\\?\` in front of a Linux path is not a path
+// Windows could record, and Linux refuses it as unplaceable (fail closed).
+const WINDOWS_ONLY = { skip: process.platform !== 'win32' && 'extended-length paths are a Windows spelling' };
+
+test('an extended-length native cwd is normalized before the path policy and the note', WINDOWS_ONLY, () => {
   const f = fixture();
   try {
     const extended = `\\\\?\\${f.cwd}`;
@@ -482,7 +486,7 @@ test('a device path that hides where it leads refuses the session instead of bei
   }
 });
 
-test('an ordinary extended-length path beside a protected root is still captured', () => {
+test('an ordinary extended-length path beside a protected root is still captured', WINDOWS_ONLY, () => {
   const f = fixture();
   try {
     mainItems(f);

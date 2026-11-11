@@ -137,7 +137,9 @@ retrieved: ['[[harness/agentic-harness/sessions/1a2b…|2026-09-20 · agentic-ha
 
 **SC-2 Session-start record (H-b writes; P reads).** The SessionStart hook writes
 `~/.harness/state/session-start/<session_id>.json`:
-`{at, session_id, cwd, realm, collection, source: "status" | "outcomes" | "none", external_ids: [...], tokens}`.
+`{at, session_id, cwd, realm, collection, collection_source: "git" | "folder" | "", source: "status" | "outcomes" | "none", external_ids: [...], tokens}`.
+`collection_source` was added 2026-11-11 (records before that lack it). Capture also files a session by
+`realm` and `collection` when no note for it exists yet (`hooks/lib/filing.mjs`).
 Capture turns it into one `channel: session-start` entry of SC-1 and deletes nothing: the state
 folder is swept after 7 days by the nightly job (P adds that step).
 

@@ -4,8 +4,11 @@
  * The SessionStart hook (unit H-b) writes
  * `~/.harness/state/session-start/<session_id>.json`:
  *
- *   {at, session_id, cwd, realm, collection,
+ *   {at, session_id, cwd, realm, collection, collection_source,
  *    source: "status" | "outcomes" | "none", external_ids: [...], tokens}
+ *
+ * `realm` and `collection` also file the session when it has no note yet
+ * (`readSessionStartPlacement`, used by filing.mjs).
  *
  * The hook writes it with `writeSessionStartRecord` (at the end of this
  * file), so the shape written and the shape read are checked in one place.
@@ -25,6 +28,12 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { AREAS, COLLECTION_FROM_FOLDER, COLLECTION_FROM_GIT } from './constants.mjs';
+import { slugify } from './text.mjs';
+
+/** How the hook's placement was decided, as a note's `collection_source` says it. */
+const COLLECTION_SOURCES = Object.freeze([COLLECTION_FROM_GIT, COLLECTION_FROM_FOLDER]);
 
 /** Overrides `~/.harness/state` — the tests use it; a VM may too. */
 export const STATE_DIR_ENV_VAR = 'HARNESS_STATE_DIR';
@@ -89,6 +98,30 @@ export function readSessionStartRecord({ sessionId, env = process.env, stateDir 
 
 function refuse(reason) {
   return { record: null, reason };
+}
+
+/**
+ * Where the SessionStart hook placed this session: `{area, collection,
+ * collectionSource}`, or null when there is no record or it names no folder
+ * a note could be written in. The host computed it with the session's own
+ * checkout in reach, which is why filing asks it before the path-text rules.
+ * `collectionSource` is '' in records written before it was kept.
+ */
+export function readSessionStartPlacement({ sessionId, env = process.env, stateDir = defaultStateDir(env) } = {}) {
+  try {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return null;
+    if (typeof stateDir !== 'string' || !stateDir) return null;
+    const loaded = loadJson(path.join(stateDir, `${sessionId}${RECORD_SUFFIX}`));
+    if (!loaded.ok) return null;
+    const raw = loaded.value;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw) || raw.session_id !== sessionId) return null;
+    const { realm, collection } = raw;
+    if (!AREAS.includes(realm) || typeof collection !== 'string' || !collection || slugify(collection) !== collection) return null;
+    const collectionSource = COLLECTION_SOURCES.includes(raw.collection_source) ? raw.collection_source : '';
+    return { area: realm, collection, collectionSource };
+  } catch {
+    return null;
+  }
 }
 
 /** lstat first: a directory, a symlink or a huge file is not a record. */
@@ -180,7 +213,7 @@ export function writeSessionStartRecord({ record, stateDir = defaultStateDir(pro
 
 function toStoredRecord(record) {
   if (record === null || typeof record !== 'object') return { ok: false, reason: 'not an object' };
-  const { at, sessionId, cwd, realm, collection, source, externalIds, tokens } = record;
+  const { at, sessionId, cwd, realm, collection, collectionSource, source, externalIds, tokens } = record;
   if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return { ok: false, reason: 'bad session id' };
   if (!isIsoTimestamp(at)) return { ok: false, reason: 'bad at' };
   if (!BRIEF_SOURCES.includes(source)) return { ok: false, reason: 'bad source' };
@@ -196,6 +229,7 @@ function toStoredRecord(record) {
     cwd: typeof cwd === 'string' ? cwd : '',
     realm: isLabel(realm) ? realm : '',
     collection: isLabel(collection) ? collection : '',
+    collection_source: COLLECTION_SOURCES.includes(collectionSource) ? collectionSource : '',
     source,
     external_ids: ids,
     tokens,

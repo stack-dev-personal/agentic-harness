@@ -110,6 +110,7 @@ function recordBrief({ brief, input, now, stateDir, writeRecord, log }) {
         cwd: input.cwd,
         realm: brief.realm,
         collection: brief.collection,
+        collectionSource: brief.collectionSource,
         source: brief.source,
         externalIds: brief.externalIds,
         tokens: brief.tokens,

@@ -7,6 +7,7 @@ import { captureSubagent } from './subagent.mjs';
 import { captureCodex } from '../codex-session-capture.mjs';
 import { discoverCodexSqliteSessions } from './codex-sqlite.mjs';
 import { readCodexHead, isSubagentHead } from './codex-head.mjs';
+import { hostPathFlavor } from './host-paths.mjs';
 import { MAIN_TRANSCRIPT_MAX_BYTES } from './constants.mjs';
 import { sessionMemoryEligibility } from './memory-policy.mjs';
 import { readEntries } from './transcript.mjs';
@@ -81,7 +82,11 @@ function ownCodexTask(child, parent, deadlineAt) {
 }
 
 export function discoverCodexSessions({ home = os.homedir(), vaultRoot, env = process.env, since = 0, log = () => {} }) {
-  const native = discoverCodexSqliteSessions({ home, vaultRoot, env, since, log });
+  // A worker reading another host's sessions never opens its live Codex
+  // database: a read-only open of a WAL database across a host bind is not
+  // safe. The rollout files below cover those sessions.
+  const native = hostPathFlavor(env) ? Object.assign([], { authoritativeIds: new Set() })
+    : discoverCodexSqliteSessions({ home, vaultRoot, env, since, log });
   const all = new Map();
   for (const root of ['sessions', 'archived_sessions']) for (const file of files(path.join(home, '.codex', root))) {
     const stat = fs.statSync(file);

@@ -8,6 +8,7 @@ import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoi
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility } from './lib/memory-policy.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { hostPathFlavor } from './lib/host-paths.mjs';
 import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { createLogger } from './lib/logger.mjs';
@@ -44,7 +45,11 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
   }
   const hermesHome = env.HARNESS_HERMES_HOME || (process.platform === 'win32'
     ? path.join(home, 'AppData', 'Local', 'hermes') : path.join(home, '.hermes'));
-  if (fs.existsSync(hermesHome)) {
+  if (hostPathFlavor(env)) {
+    // A worker reading another host's sessions does not read Hermes: its
+    // database is not mounted there, and its own session hook still captures.
+    candidates.capabilities.push({ runtime: 'hermes', available: false, installed: false, reason: 'not read under a host path flavor' });
+  } else if (fs.existsSync(hermesHome)) {
     try {
     const { discoverHermesSessions, readHermesSession, captureHermes } = await import('./hermes-session-capture.mjs');
     for (const candidate of discoverHermesSessions({ hermesHome, log })) {

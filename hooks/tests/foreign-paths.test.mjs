@@ -17,7 +17,7 @@ import { routeSession } from '../lib/collection.mjs';
 import { hostSettings } from '../lib/host-settings.mjs';
 import { makeRepoResolver } from '../lib/paths.mjs';
 import { resolveRepo } from '../lib/repo.mjs';
-import { runMemoryWorker } from '../memory-worker.mjs';
+import { discoverMemorySessions, runMemoryWorker } from '../memory-worker.mjs';
 import { createSandbox } from './helpers/sandbox.mjs';
 
 const FLAVOR = Object.freeze({ HARNESS_HOST_PATH_FLAVOR: 'win32', HARNESS_HOST_HOME: 'C:\\Users\\alex',
@@ -135,5 +135,24 @@ test('a worker under a flavor with no host home logs why and fails, never captur
     assert.deepEqual(result, { disabled: true, failed: 1 });
     assert.ok(lines.some(line => /memory worker blocked: .*HARNESS_HOST_HOME/.test(line)), lines.join('\n'));
     assert.equal(fs.existsSync(path.join(home, '.harness', 'memory-worker.lock')), false, 'blocked before any state is touched');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// ------------------------------- runtimes a flavored worker does not read
+
+test('under a flavor Hermes and the Codex database are off by design, reported as not installed', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-worker-runtimes-'));
+  try {
+    const hermesHome = path.join(home, 'hermes');
+    fs.mkdirSync(hermesHome);
+    fs.mkdirSync(path.join(home, '.codex'));
+    // Not a database: opening it natively fails, so a skipped open is visible.
+    fs.writeFileSync(path.join(home, '.codex', 'state_5.sqlite'), 'not a database');
+    const env = { ...FLAVOR, HARNESS_MEMORY_EXCLUDED_ROOTS: '[]', HARNESS_HERMES_HOME: hermesHome };
+    const found = await discoverMemorySessions({ home, vaultRoot: path.join(home, 'vault'), stateDir: home, env, log: () => {} });
+    assert.deepEqual(found.capabilities.find((item) => item.runtime === 'hermes'),
+      { runtime: 'hermes', available: false, installed: false, reason: 'not read under a host path flavor' });
+    assert.deepEqual(found.capabilities.find((item) => item.runtime === 'codex'), { runtime: 'codex', available: true });
+    assert.equal(found.length, 0);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

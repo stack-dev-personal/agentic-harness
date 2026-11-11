@@ -106,6 +106,60 @@ Protected-root checks resolve relative paths in the session/entry working
 directory and follow junctions. Neither secret redaction nor a label-scanning
 regular expression establishes that arbitrary content is unrestricted.
 
+### Judging another operating system's paths
+
+Where the worker or the ingest runs on one operating system and reads sessions
+recorded on another (the Linux jobs container reading a Windows host's
+transcripts), set `HARNESS_HOST_PATH_FLAVOR=win32`. Session paths are then
+compared as Windows text, with no filesystem call. `win32` is the only value;
+any other is a configuration error. Unset, nothing changes: paths are resolved
+on the real filesystem as above.
+
+Under a flavor:
+
+- `HARNESS_MEMORY_EXCLUDED_ROOTS` must be passed, and each root must be a full
+  Windows path (`C:/private-work`, `//server/share/briefs`). A missing variable
+  is a configuration error; write `[]` to mean "nothing is protected". A worker
+  whose configuration is refused logs the reason and exits non-zero, so it
+  cannot look healthy while capturing nothing.
+- Case, slash direction, repeated separators, `.` and `..`, trailing dots and
+  spaces, stream suffixes, the `\\?\`, `\\.\` and `\??\` prefixes, the
+  `/c/`, `/mnt/c/`, `/cygdrive/c/` and `/proc/cygdrive/c/` drive spellings and
+  the administrative share (`\\host\C$\`) all name the folder they name on
+  Windows. A name that could be the 8.3 short name of a protected folder
+  (`PRIVAT~1`) counts as that folder.
+- A session from a Mac or Linux machine, whose working directory has no
+  drive, is compared by folder names. A path whose starting folder is unknown
+  (a relative path with no recorded working directory, `~/x`) is protected
+  when it begins with the last names of a root, and allowed otherwise.
+- Every doubt resolves toward "protected", and what text cannot place (a
+  device path that names no drive or carries a `.` or `..` segment, a
+  drive-relative path on another drive, a drive named in the middle of a
+  path, a share reached through a named redirector, a `file:` URL, a path
+  through `/proc/<process>/cwd` or with a `..` under `/proc` or `/dev`) is
+  refused. A protected path always wins over an unplaceable one beside it,
+  because only "protected path touched" marks the session for good.
+- A root that is a whole drive or a whole share protects everything on that
+  drive or share, but not paths that name no drive at all (Mac, Linux and
+  container paths): there is nothing to compare them by.
+
+Known limits of the text comparison, each of which the native check shares or
+cannot do better: a note with no recorded working directory whose real one was
+inside a root, touching only relative paths that do not repeat the root's
+names; `~user/...` and a home folder on a share; Git Bash's `/tmp` when a root
+sits under the Windows temp folder; WSL and Cygwin spellings beyond the ones
+listed above.
+
+What text cannot see: a junction or symbolic link that leads into a protected
+folder under another name, and the same share reached through another server
+name, address or mapped drive. List each such alias as its own root. The hooks
+that run on the host itself still resolve junctions at session start and end.
+
+The rules live twice, in `hooks/lib/host-paths.mjs` and
+`ingest/src/ingest/memory_policy.py`, and must give the same answer for the same
+text. Neither borrows from its standard library, because `path.win32` and
+`ntpath` disagree. Change both together and run both test files.
+
 These controls govern the harness. They cannot undo native transcript writes or
 remote model requests that already occurred. Before restricted work, each native
 runtime must independently have verified history/memory suppression and local-only

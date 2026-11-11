@@ -3,9 +3,16 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { hostPathFlavor, hostPathWithin, isHostRoot } from './host-paths.mjs';
 import { persist } from './notes-io.mjs';
 
 const DISABLED = /^(?:0|false|off|no|exclude)$/i;
+/**
+ * The one refusal that is a choice (HARNESS_MEMORY_PERSISTENCE off). Callers
+ * that stand down quietly for it must not do the same for any other reason:
+ * every other closed gate is a broken setting.
+ */
+export const PERSISTENCE_DISABLED = 'memory persistence disabled';
 const EXCLUDED_PURPOSES = new Set(['housekeeping', 'observer', 'derivative']);
 
 /** Native callbacks and serialized vault notes use different ancestry aliases. */
@@ -94,7 +101,7 @@ export function entryPaths(entries) {
 }
 
 export function memoryEligibility({ input = {}, env = process.env, paths = [] } = {}) {
-  if (DISABLED.test(String(env.HARNESS_MEMORY_PERSISTENCE ?? ''))) return { allowed: false, reason: 'memory persistence disabled' };
+  if (DISABLED.test(String(env.HARNESS_MEMORY_PERSISTENCE ?? ''))) return { allowed: false, reason: PERSISTENCE_DISABLED };
   let ancestors;
   try { ancestors = sessionAncestors(input); }
   catch { return { allowed: false, reason: 'invalid session ancestry' }; }
@@ -121,18 +128,62 @@ export function memoryEligibility({ input = {}, env = process.env, paths = [] } 
   }
   if (previousDecision?.taint) return previousDecision;
   let roots = [];
+  // Set where the worker reads another operating system's transcripts (the
+  // jobs container): session paths are then compared as text by that system's
+  // rules (host-paths.mjs). Unset, they are resolved on this filesystem.
+  let flavor = null;
   try {
+    flavor = hostPathFlavor(env);
+    // Under a flavor the roots travel from the host into another environment.
+    // A variable that did not make the trip must not read as "nothing is
+    // protected": say `[]` to mean that.
+    if (flavor && !env.HARNESS_MEMORY_EXCLUDED_ROOTS) throw new Error('roots not passed');
     roots = env.HARNESS_MEMORY_EXCLUDED_ROOTS ? JSON.parse(env.HARNESS_MEMORY_EXCLUDED_ROOTS) : [];
-    if (!Array.isArray(roots) || roots.some(root => typeof root !== 'string' || !path.isAbsolute(root))) throw new Error('invalid roots');
+    const valid = root => typeof root === 'string' && (flavor ? isHostRoot(flavor, root) : path.isAbsolute(root));
+    if (!Array.isArray(roots) || !roots.every(valid)) throw new Error('invalid roots');
   } catch { return { allowed: false, reason: 'invalid memory exclusion configuration' }; }
-  try {
-    for (const item of [input.cwd, input.transcriptPath, ...paths].filter(Boolean)) {
-      const file = typeof item === 'string' ? item : item.path;
-      if (typeof file !== 'string' || !file) continue;
-      const cwd = (typeof item === 'object' ? item.cwd : '') || input.cwd || process.cwd();
-      for (const root of roots) if (pathWithin(canonicalPath(root), canonicalPath(file, cwd))) return { allowed: false, reason: 'protected path touched' };
+  // Every entry is judged before anything is refused as unverifiable: one
+  // malformed or unplaceable entry must not hide a protected path beside it,
+  // because only "protected path touched" marks the session for good.
+  // With no roots there is nothing to compare against, and nothing is judged.
+  if (roots.length === 0) {
+    if (previousDecision) return previousDecision;
+    if (EXCLUDED_PURPOSES.has(String(input.purpose ?? '').trim().toLowerCase())) return { allowed: false, reason: 'excluded session purpose' };
+    return { allowed: true, reason: '' };
+  }
+  let unverified = false;
+  const isText = value => typeof value === 'string';
+  const isBlank = value => value == null || value === '';
+  const sessionCwd = isText(input.cwd) ? input.cwd : '';
+  const items = [];
+  if (!Array.isArray(paths)) unverified = true;
+  for (const value of [input.cwd, input.transcriptPath]) {
+    if (isBlank(value)) continue;
+    if (isText(value)) items.push({ file: value, cwd: sessionCwd });
+    else unverified = true;
+  }
+  for (const item of Array.isArray(paths) ? paths : []) {
+    if (isBlank(item)) continue;
+    if (isText(item)) { items.push({ file: item, cwd: sessionCwd }); continue; }
+    // A shape this loop would skip is a path it would never test.
+    const walkable = typeof item === 'object' && !Array.isArray(item) && ('path' in item || 'cwd' in item)
+      && [item.path, item.cwd].every(value => isBlank(value) || isText(value));
+    if (!walkable) { unverified = true; continue; }
+    // The folder an entry ran in is itself a place the session was.
+    if (item.cwd) items.push({ file: item.cwd, cwd: sessionCwd });
+    if (item.path) items.push({ file: item.path, cwd: item.cwd || sessionCwd });
+  }
+  for (const { file, cwd: recordedCwd } of items) {
+    for (const root of roots) {
+      try {
+        const inside = flavor
+          ? hostPathWithin(flavor, root, file, recordedCwd)
+          : pathWithin(canonicalPath(root), canonicalPath(file, recordedCwd || process.cwd()));
+        if (inside) return { allowed: false, reason: 'protected path touched' };
+      } catch { unverified = true; }
     }
-  } catch { return { allowed: false, reason: 'memory path policy could not be verified' }; }
+  }
+  if (unverified) return { allowed: false, reason: 'memory path policy could not be verified' };
   if (previousDecision) return previousDecision;
   if (EXCLUDED_PURPOSES.has(String(input.purpose ?? '').trim().toLowerCase())) return { allowed: false, reason: 'excluded session purpose' };
   return { allowed: true, reason: '' };

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { DISABLE_VALUES } from './constants.mjs';
 import { ENV_ENABLED, ingestEntry, inBatches, resolveProjectDir, resolveUv } from './enqueue-ingest.mjs';
 import { loadMachineEnv } from './machine-env.mjs';
-import { memoryEligibility } from './memory-policy.mjs';
+import { PERSISTENCE_DISABLED, memoryEligibility } from './memory-policy.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { persist } from './notes-io.mjs';
 
@@ -39,7 +39,13 @@ function isVaultNote(file, vaultRoot) {
  */
 export function queueIngest({ notePaths, vaultRoot, env = process.env, log = () => {}, run = spawnSync, startTask = true, queueName = QUEUE_NAME, taskName = TASK_NAME }) {
   try {
-    if (!memoryEligibility({ env }).allowed) return { queued: false, reason: 'memory persistence disabled by policy' };
+    const gate = memoryEligibility({ env });
+    if (!gate.allowed) {
+      if (gate.reason === PERSISTENCE_DISABLED) return { queued: false, reason: 'memory persistence disabled by policy' };
+      // A broken setting, not a choice: it must show in the log, not pass as "off".
+      log(`ingest not queued: ${gate.reason}`);
+      return { queued: false, reason: gate.reason };
+    }
     if (DISABLE_VALUES.has(String(env[ENV_ENABLED] ?? '').toLowerCase())) {
       return { queued: false, reason: `disabled by ${ENV_ENABLED}` };
     }
@@ -97,7 +103,14 @@ function readQueuedNotes(file, vaultRoot, env) {
  */
 export function drainIngest({ env = process.env, run = spawnSync, log = () => {}, queueName = QUEUE_NAME } = {}) {
   const loaded = loadMachineEnv(env);
-  if (!memoryEligibility({ env: loaded }).allowed) return { ingested: 0, failed: [], disabled: true };
+  const gate = memoryEligibility({ env: loaded });
+  if (!gate.allowed) {
+    if (gate.reason === PERSISTENCE_DISABLED) return { ingested: 0, failed: [], disabled: true };
+    // A broken setting is a failure, not "off": a caller that only counts
+    // `failed` must see it.
+    log(`ingest queue not drained: ${gate.reason}`);
+    return { ingested: 0, failed: [`blocked: ${gate.reason}`], disabled: true };
+  }
   const vaultRoot = loaded.HARNESS_VAULT || path.join(loaded.USERPROFILE || os.homedir(), 'vault');
   const projectDir = resolveProjectDir(loaded);
   const uv = resolveUv(loaded);

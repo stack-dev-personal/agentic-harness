@@ -45,7 +45,8 @@ import { readTranscriptHead } from './transcript-head.mjs';
  * @param {string} args.vaultRoot
  * @param {number} args.deadlineAt
  * @param {function} [args.runGit]
- * @param {object} [args.into]       an accumulator to add to, when a caller has
+ * @param {object} [args.env]        a host path flavor here means no checkout is read
+ * @param {object} [args.into]      an accumulator to add to, when a caller has
  *                                   already folded subagent transcripts into one
  * @returns everything a note context needs, except the session's own identity.
  */
@@ -58,6 +59,7 @@ export function analyseTranscript({
   deadlineAt,
   runGit = runGitSync,
   into = null,
+  env = process.env,
 }) {
   const accumulator = into ?? createAccumulator();
   if (!into) extractTools(entries, accumulator);
@@ -73,12 +75,12 @@ export function analyseTranscript({
   const placementCwd = declaredCwd(transcriptPath, cwdsSeen) || effectiveCwd;
   // For a Claude Code folder (`~/.claude/projects/<encoded>/…`, a scratchpad)
   // the rules read the decoded cwd, and the repository comes from there too.
-  const { placement, repo } = placeSession({ cwd: placementCwd, vaultRoot });
+  const { placement, repo } = placeSession({ cwd: placementCwd, vaultRoot, env });
   const { area, collection, collectionSource } = placement;
   const branch = repo.branch || lastBranchSeen(accumulator) || '';
 
   const paths = classifyPaths(sortedFiles(accumulator), {
-    repoFor: makeRepoResolver(),
+    repoFor: makeRepoResolver({ env }),
     maxFiles: MAX_FILES_LISTED,
     maxDocs: MAX_DOCS_TOUCHED,
     maxMemory: MAX_MEMORY_FILES,
@@ -86,7 +88,7 @@ export function analyseTranscript({
   });
 
   const readPaths = classifyPaths(sortedEntries(accumulator.filesRead), {
-    repoFor: makeRepoResolver(),
+    repoFor: makeRepoResolver({ env }),
     maxFiles: MAX_FILES_LISTED,
     maxDocs: MAX_DOCS_TOUCHED,
     maxMemory: MAX_MEMORY_FILES,

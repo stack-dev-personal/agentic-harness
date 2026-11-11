@@ -129,13 +129,14 @@ export function captureSubagent({
     deadlineAt,
     runGit,
     into: accumulator,
+    env,
   });
 
   const agentType = redact(String(input.agentType || meta.agentType || '')).slice(0, MAX_LABEL_CHARS);
 
   const date = isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString());
 
-  const placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot, log });
+  const placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot, log, env });
   const { current, notePath: targetPath } = placement;
   if (current.error) {
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
@@ -298,8 +299,8 @@ const NO_NOTE = Object.freeze({ fields: null, body: '', error: '', stub: false }
  *            parentStartedAt: string, parentRepo: string,
  *            parentPhase: string, basis: string}}
  */
-function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log }) {
-  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
+function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log, env }) {
+  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot, env });
   const home = fromParent
     ? { area: fromParent.area, collection: fromParent.collection, collectionSource: fromParent.collectionSource }
     : { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
@@ -404,14 +405,14 @@ function inheritFromParent(facts, placement) {
  * transcript is never taken for its parent's. `readHead` is injectable so a
  * test can count the reads.
  */
-export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHead = readTranscriptHead }) {
+export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHead = readTranscriptHead, env = process.env }) {
   const own = toPosix(agentTranscriptPath);
   const named = [parentTranscriptBeside(agentTranscriptPath, input.sessionId), input.transcriptPath].map(toPosix);
   const candidates = [...new Set(named)].filter((candidate) => candidate && candidate !== own);
   for (const candidate of candidates) {
     const { cwd, timestamp = '' } = readHead(candidate);
     if (!cwd) continue;
-    const { placement, repo } = placeSession({ cwd, vaultRoot });
+    const { placement, repo } = placeSession({ cwd, vaultRoot, env });
     const repoFullName = repo?.repoFullName ?? '';
     return {
       area: placement.area,

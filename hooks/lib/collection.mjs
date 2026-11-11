@@ -39,10 +39,13 @@ import {
   COLLECTION_FROM_GIT,
   REALM_MARKER,
 } from './constants.mjs';
+import { hostPathFlavor } from './host-paths.mjs';
 import { resolveRepo } from './repo.mjs';
 import { slugify, toPosix } from './text.mjs';
 
 const MAX_WALK_UP = 40;
+/** The identity of a path that names no checkout: `resolveRepo`'s empty answer. */
+const NO_REPO = resolveRepo('');
 const FALLBACK_COLLECTION = 'misc';
 
 /** The harness's own repository, and the collection its history is filed under. */
@@ -129,14 +132,19 @@ export function routeSession({
   tmp = os.tmpdir(),
   resolveRepoFor = resolveRepo,
   holdsHarness = holdsHarnessRealm(vaultRoot),
+  env = process.env,
 }) {
+  // Session paths from another host name no checkout on this disk: the rules
+  // read the path text alone, whatever repository a caller supplies.
+  const foreign = Boolean(hostPathFlavor(env));
+  const repoOf = foreign ? () => NO_REPO : resolveRepoFor;
   const decoded = decodeClaudeStateCwd(cwd, { home, tmp });
   const shared = { vaultRoot, home, holdsHarness };
   // The repository of the cwd the rules read: resolved here only when the caller
   // did not already, or when decoding moved to another folder.
   const context = decoded
-    ? { ...shared, cwd: decoded, repo: resolveRepoFor(decoded) }
-    : { ...shared, cwd: toPosix(cwd), repo: repo ?? resolveRepoFor(cwd) };
+    ? { ...shared, cwd: decoded, repo: repoOf(decoded) }
+    : { ...shared, cwd: toPosix(cwd), repo: foreign ? NO_REPO : repo ?? repoOf(cwd) };
   for (const rule of ROUTING_RULES) {
     const placed = rule.place(context);
     if (placed) return { ...placed, rule: rule.name, routedCwd: context.cwd, repo: context.repo };
@@ -150,8 +158,8 @@ export function routeSession({
  * note filed `collection_source: git` always carries that repo, branch and
  * commits.
  */
-export function placeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor = resolveRepo, holdsHarness }) {
-  const placement = routeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor, holdsHarness });
+export function placeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor = resolveRepo, holdsHarness, env }) {
+  const placement = routeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor, holdsHarness, env });
   return { placement, repo: placement.repo };
 }
 

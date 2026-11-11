@@ -135,6 +135,7 @@ export function captureSession({
     deadlineAt,
     runGit,
     into: accumulator,
+    env,
   });
 
   const concluded = input.endReason !== RESUME_REASON;

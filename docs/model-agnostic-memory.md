@@ -58,9 +58,18 @@ node hooks/memory-worker.mjs --health
 ```
 
 Claude's installer backs up and verifies deployed hooks. The scheduled task is
-`AgenticHarness-Memory`, runs hidden every five minutes, and also starts on a
+`AgenticHarness-Memory`, runs every five minutes, and also starts on a
 capture handoff. Registration backs up existing task definitions and disables
-the old Codex-only task. The old script and queue names remain compatibility
+the old Codex-only task.
+
+A task registered this way runs in the desktop session, and Windows shows its
+console window for a moment on every run before `-WindowStyle Hidden` applies;
+that window takes keyboard focus. Where an elevated PowerShell is available, run
+`./scripts/set-task-windowless.ps1 -Apply` afterwards. It moves the memory
+worker and the checkpoint collector to logon type S4U (session 0, no desktop,
+no window) and keeps their actions and triggers. Re-running a register script
+puts the task back in the desktop session, so run it again after that. A
+machine without administrator rights keeps the Interactive task. The old script and queue names remain compatibility
 entry points; the common worker drains legacy pending work.
 
 On POSIX, schedule `node <harness>/hooks/memory-worker.mjs` every five minutes

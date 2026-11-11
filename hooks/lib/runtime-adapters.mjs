@@ -22,12 +22,18 @@ function* files(root) {
   }
 }
 
-function wrapped(candidate, { vaultRoot, env, log }) {
+/**
+ * `lockSessions` are the ids the capture files by (filing.mjs): its own, and
+ * the parent and ancestors it may be placed beside. Their notes' and records'
+ * realms are locked with the cwd's, so the write never lands in a realm the
+ * worker does not hold.
+ */
+function wrapped({ lockSessions, ...candidate }, { vaultRoot, env, log }) {
   const invoke = candidate.capture;
   return { ...candidate, capture: ({ deadlineAt }) => {
     const policy = sessionMemoryEligibility({ input: { ...candidate.input, runtime: candidate.runtime }, env });
     if (!policy.allowed) return { written: false, action: 'excluded', skip: policy.reason, touchedPaths: [] };
-    return withRealmLocks({ cwd: candidate.input.cwd, vaultRoot, log, owner: 'memory checkpoint' },
+    return withRealmLocks({ cwd: candidate.input.cwd, vaultRoot, log, owner: 'memory checkpoint', env, sessions: lockSessions },
       () => invoke({ deadlineAt }), () => ({ written: false, action: 'deferred', touchedPaths: [] }));
   } };
 }
@@ -41,6 +47,7 @@ export function discoverClaudeSessions({ home = os.homedir(), vaultRoot, env = p
     const head = readTranscriptHead(candidate.transcriptPath);
     const input = { ...candidate, cwd: head.cwd, hookEventName: 'SessionEnd', endReason: 'resume' };
     if (candidate.mtimeMs >= since) result.push(wrapped({ runtime: 'claude-code', sessionId: candidate.sessionId, fingerprint: `${stat.mtimeMs}:${stat.size}`, input,
+      lockSessions: [{ sessionId: candidate.sessionId }],
       capture: ({ deadlineAt }) => capture({ input, vaultRoot, projectsRoot, deadlineAt, capturedBy: 'sweep', env }),
     }, { vaultRoot, env, log }));
     for (const worker of listSubagentTranscripts(candidate.transcriptPath, candidate.sessionId)) {
@@ -49,6 +56,7 @@ export function discoverClaudeSessions({ home = os.homedir(), vaultRoot, env = p
       const childInput = { ...input, ...worker, hookEventName: 'SubagentStop' };
       result.push(wrapped({ runtime: 'claude-code', sessionId: `${candidate.sessionId}--${worker.agentId}`,
         fingerprint: `${childStat.mtimeMs}:${childStat.size}`, input: childInput,
+        lockSessions: [{ sessionId: `${candidate.sessionId}--${worker.agentId}` }, { sessionId: candidate.sessionId }],
         capture: ({ deadlineAt }) => captureSubagent({ input: childInput, vaultRoot, projectsRoot, deadlineAt, capturedBy: 'sweep', env }),
       }, { vaultRoot, env, log }));
     }
@@ -93,6 +101,7 @@ export function discoverCodexSessions({ home = os.homedir(), vaultRoot, env = pr
     }
     const input = { sessionId: id, parentSession: parentId || '', ancestorSessions, transcriptPath: record.file, cwd: record.head.payload.cwd || '', hookEventName: 'SessionEnd', endReason: 'resume' };
     return wrapped({ runtime: 'codex', sessionId: `codex-${id}`, fingerprint: `${record.stat.mtimeMs}:${record.stat.size}`, input,
+      lockSessions: [id, ...ancestorSessions].map((each) => ({ sessionId: `codex-${each}`, briefSessionId: each })),
       capture: ({ deadlineAt }) => captureCodex({ input, home, vaultRoot, env, deadlineAt, capturedBy: 'sweep', allowSubagent: true,
         ownTask: isSubagentHead(record.head) ? ownCodexTask(record, all.get(parentId), deadlineAt) : '',
         childSessions: [...all.entries()].filter(([, child]) => child.head.payload.parent_thread_id === id).map(([childId]) => `session-codex-${childId}`),

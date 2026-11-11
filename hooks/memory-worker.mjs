@@ -51,7 +51,8 @@ export async function discoverMemorySessions({ home, vaultRoot, stateDir, env, n
       candidates.push({ ...candidate, runtime: 'hermes', capture: ({ deadlineAt }) => {
         const policy = memoryEligibility({ input: { ...candidate, runtime: 'hermes' }, env });
         if (!policy.allowed) return { written: false, action: 'excluded', touchedPaths: [] };
-        return withRealmLocks({ cwd: candidate.cwd, vaultRoot, log, owner: 'memory checkpoint' }, () => {
+        return withRealmLocks({ cwd: candidate.cwd, vaultRoot, log, owner: 'memory checkpoint', env,
+          sessions: [{ sessionId: candidate.sessionId }] }, () => {
           const { snapshot } = readHermesSession({ hermesHome, sessionId: candidate.nativeSessionId, env });
           return captureHermes({ snapshot, vaultRoot, env, deadlineAt, capturedBy: 'sweep' });
         }, () => ({ written: false, action: 'deferred', touchedPaths: [] }));

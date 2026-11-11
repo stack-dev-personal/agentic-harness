@@ -18,7 +18,8 @@ import { Worker } from 'node:worker_threads';
 
 import { acquireRealmLock, releaseRealmLock } from '../lib/realm-lock.mjs';
 import { persist } from '../lib/notes-io.mjs';
-import { runSweep } from '../lib/sweep.mjs';
+import { discoverClaudeSessions } from '../lib/runtime-adapters.mjs';
+import { runSweep, withRealmLocks } from '../lib/sweep.mjs';
 import { EXIT_OK, run as runSweepCli } from '../sweep-transcripts.mjs';
 import { createSandbox, installTranscript, noGit } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
@@ -308,5 +309,45 @@ test('a note held open past the retries is never written in place: it stays whol
     assert.deepEqual(fs.readdirSync(dir), ['d.md']);
   } finally {
     cleanup();
+  }
+});
+
+// ------------------------------------- the lock follows where filing writes
+
+test('a session whose note lives in another realm takes that realm\'s lock too', () => {
+  const sandbox = createSandbox();
+  try {
+    makeRealm(sandbox.vaultRoot, 'projects');
+    const classes = makeRealm(sandbox.vaultRoot, 'classes');
+    fs.writeFileSync(path.join(sandbox.vaultRoot, 'classes', 'ist323', 'sessions', `${MAIN}.md`), '---\nid: x\n---\n');
+    const lock = holdLock(classes);
+    const cwd = path.join(sandbox.root, 'repos', 'bb2dash');
+    const run = (sessions) => withRealmLocks({ cwd, vaultRoot: sandbox.vaultRoot, sessions }, () => 'written', (name) => `deferred:${name}`);
+    assert.equal(run([{ sessionId: MAIN }]), 'deferred:classes', 'the note\'s realm is locked by someone else');
+    assert.equal(run(undefined), 'written', 'without session ids only the cwd\'s realm is taken, as before');
+    releaseRealmLock(lock);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('the memory worker defers a session whose note is in a locked realm', () => {
+  const sandbox = createSandbox();
+  try {
+    makeRealm(sandbox.vaultRoot, 'projects');
+    const classes = makeRealm(sandbox.vaultRoot, 'classes');
+    const home = path.join(sandbox.root, 'home');
+    const transcript = installTranscript(sandbox, 'plain-main', MAIN);
+    const projectDir = path.join(home, '.claude', 'projects', 'fixture');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.copyFileSync(transcript, path.join(projectDir, `${MAIN}.jsonl`));
+    fs.writeFileSync(path.join(sandbox.vaultRoot, 'classes', 'ist323', 'sessions', `${MAIN}.md`), '---\nid: x\n---\n');
+    const lock = holdLock(classes);
+    const [candidate] = discoverClaudeSessions({ home, vaultRoot: sandbox.vaultRoot, env: {} });
+    assert.equal(candidate.sessionId, MAIN);
+    assert.equal(candidate.capture({ deadlineAt: Date.now() + 30_000 }).action, 'deferred');
+    releaseRealmLock(lock);
+  } finally {
+    sandbox.cleanup();
   }
 });

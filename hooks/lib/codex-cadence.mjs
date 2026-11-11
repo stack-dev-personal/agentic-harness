@@ -36,7 +36,7 @@ export function captureChangedCodex({ home = os.homedir(), vaultRoot, capture, q
         const sessionId = String(head.payload?.id || head.payload?.session_id || '');
         if (!isSafeFilenameSegment(sessionId)) { result.errors++; continue; }
         const cwd = head.payload?.cwd || '';
-        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: 'codex cadence' },
+        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: 'codex cadence', sessions: [{ sessionId: `codex-${sessionId}`, briefSessionId: sessionId }] },
           () => capture({ input: { sessionId, transcriptPath: file, cwd,
             hookEventName: 'SessionEnd', endReason: RESUME_REASON }, vaultRoot,
             deadlineAt: Math.min(deadline, Date.now() + 30000), capturedBy: 'sweep' }),

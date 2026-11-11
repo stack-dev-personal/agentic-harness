@@ -98,7 +98,7 @@ export function sweepCodex({ home = os.homedir(), vaultRoot, capture, now = Date
         if (checkpoint ? saved[sessionId] === fingerprint && noted.has(`codex-${sessionId}`) : noted.has(`codex-${sessionId}`)) continue;
         summary.eligible += 1;
         const cwd = head.payload?.cwd || '';
-        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: LOCK_OWNER },
+        const outcome = withRealmLocks({ cwd, vaultRoot, log, owner: LOCK_OWNER, sessions: [{ sessionId: `codex-${sessionId}`, briefSessionId: sessionId }] },
           () => capture({ input: { sessionId, transcriptPath: file, cwd, hookEventName: 'SessionEnd',
             endReason: checkpoint ? RESUME_REASON : 'other' }, vaultRoot,
             deadlineAt: clock() + CAPTURE_BUDGET_MS, capturedBy: 'sweep' }),

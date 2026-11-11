@@ -108,6 +108,31 @@ export function fileSession({
   return { ...rules, basis: FILED_BY_RULES };
 }
 
+/**
+ * Every area a capture of these sessions may write in, for the realm locks:
+ * the rules' area for `cwd`, and the area of each session's note or record.
+ * A superset is safe; a missing area is a write without its lock. Null means
+ * "cannot tell, lock them all": a cwd the rules cannot route, or a session
+ * with notes in two folders (whose capture then refuses anyway).
+ *
+ * @param {Array<{sessionId: string, briefSessionId?: string}>} sessions
+ * @returns {string[]|null}
+ */
+export function filingAreas({ cwd, vaultRoot, sessions = [], stateDir, env = process.env }) {
+  const areas = new Set();
+  try {
+    areas.add(routeSession({ cwd, vaultRoot, env }).area);
+    for (const session of sessions.slice(0, MAX_ANCESTORS + 1)) {
+      if (!session?.sessionId) continue;
+      const found = placedBySession({ sessionId: session.sessionId, briefSessionId: session.briefSessionId ?? session.sessionId, vaultRoot, stateDir });
+      if (found) areas.add(found.area);
+    }
+  } catch {
+    return null;
+  }
+  return [...areas];
+}
+
 /** `area/collection/sessions`, the folder a placement writes its notes in. */
 export function sessionsFolder(vaultRoot, placement, sessionsDir) {
   return path.join(vaultRoot, placement.area, placement.collection, sessionsDir);

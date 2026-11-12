@@ -48,8 +48,7 @@ function fixture() {
 
 function mainItems(f, id = 'main') {
   f.thread(id); f.turn(id);
-  f.item(id, { type: 'userMessage', content: [{ type: 'text', text: '<environment_context>machine only</environment_context>' }] }, 1);
-  f.item(id, { type: 'userMessage', content: [{ type: 'text', text: 'Record the shared database decision.' }] }, 2);
+  f.item(id, { type: 'userMessage', content: [{ type: 'text', text: '<environment_context>machine only</environment_context>' }] }, 1);  f.item(id, { type: 'userMessage', content: [{ type: 'text', text: 'Record the shared database decision.' }] }, 2);
   f.item(id, { type: 'agentMessage', text: 'Working on it.', phase: 'commentary' }, 3);
   f.item(id, { type: 'commandExecution', command: 'git status', cwd: f.cwd, aggregatedOutput: 'RAW-TOOL-SECRET' }, 4);
   f.item(id, { type: 'fileChange', changes: [{ path: path.join(f.cwd, 'result.txt'), kind: 'update', diff: 'RAW-DIFF-SECRET' }] }, 5);
@@ -90,6 +89,22 @@ test('SQLite discovery reads metadata only; capture uses native items and shared
     assert.match(raw, /same memory index/);
     assert.match(raw, /result\.txt/);
     assert.ok(!/RAW-|Working on it|machine only/.test(raw));
+  } finally { f.close(); }
+});
+
+test('SQLite skill and AGENTS.md blocks never become prompts, as from the rollout', () => {
+  const f = fixture();
+  try {
+    f.thread('main'); f.turn('main');
+    f.item('main', { type: 'userMessage', content: [{ type: 'text', text: '# AGENTS.md instructions\n\n<INSTRUCTIONS>INJECTED-AGENTS</INSTRUCTIONS>' }] }, 1);
+    f.item('main', { type: 'userMessage', content: [{ type: 'text', text: '<skill>\n<name>INJECTED-SKILL</name>\n</skill>' }] }, 2);
+    f.item('main', { type: 'userMessage', content: [{ type: 'text', text: 'Summarise the release.' }] }, 3);
+    f.item('main', { type: 'agentMessage', text: 'Release summarised.', phase: 'final_answer' }, 4);
+    const outcome = discoverCodexSqliteSessions(f.options)[0].capture({ deadlineAt: Date.now() + 3000 });
+    assert.equal(outcome.written, true);
+    const raw = fs.readFileSync(outcome.notePath, 'utf8');
+    assert.equal(parseFrontmatter(raw).fields.prompt_count, 1);
+    assert.doesNotMatch(raw, /INJECTED-/);
   } finally { f.close(); }
 });
 

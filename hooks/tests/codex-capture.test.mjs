@@ -367,6 +367,17 @@ test('Codex-injected user blocks are not human prompts', () => {
   assert.equal(humanPrompt('What changed today?'), 'What changed today?');
 });
 
+test('rollout skill and AGENTS.md blocks never become prompts in the note', () => {
+  const { entries } = extractCodexTurns([
+    { type: 'session_meta', timestamp: at(0), payload: { id: 'injected', cwd: 'C:/repo' } },
+    message('user', '# AGENTS.md instructions\n\n<INSTRUCTIONS>be terse</INSTRUCTIONS>', at(1)),
+    message('user', '<skill>\n<name>release-notes</name>\n</skill>', at(2)),
+    message('user', 'Summarise the release.', at(3)),
+  ], 'C:/repo', { env: {} });
+  const prompts = entries.filter((entry) => entry.type === 'user').map((entry) => entry.message.content);
+  assert.deepEqual(prompts, ['Summarise the release.']);
+});
+
 test('Codex capture fails closed when the transcript head is not session_meta', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-head-'));
   try {

@@ -9,6 +9,7 @@ import { analyseTranscript } from './lib/analyse.mjs';
 import { isSubagentHead, readCodexHead, resolveCodexTranscript } from './lib/codex-head.mjs';
 import { captureSession } from './lib/capture.mjs';
 import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
+import { humanPrompt } from './lib/codex-prompt.mjs';
 import { isEncryptedTask, placeholderTask } from './lib/codex-task.mjs';
 import { hostPathFlavor, joinHostPath } from './lib/host-paths.mjs';
 import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
@@ -36,24 +37,8 @@ function textBlocks(content, type) {
     .map((block) => block.text).join('\n').trim();
 }
 
-/** User-role blocks Codex writes itself: machine context, AGENTS.md text, `!` shell runs. */
-const INJECTED_USER_BLOCK = new RegExp(
-  '^(?:<(?:environment_context|external_codex_apps_open_page|turn_aborted|system_reminder'
-  + '|user_instructions|user_shell_command|INSTRUCTIONS)>|# AGENTS\\.md instructions for )',
-);
-
-export function humanPrompt(text) {
-  if (!text) return '';
-  if (INJECTED_USER_BLOCK.test(text)) return '';
-  const reply = text.match(/^<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>$/);
-  if (!reply) return text;
-  try {
-    const answers = JSON.parse(reply[1]);
-    return Array.isArray(answers) ? answers.map((item) => item?.answer).filter((value) => typeof value === 'string' && value.trim()).join('\n') : '';
-  } catch {
-    return '';
-  }
-}
+/** Which user turns a person typed: shared with the SQLite adapter (codex-prompt.mjs). */
+export { humanPrompt };
 
 function toolArgs(payload) {
   if (payload?.arguments && typeof payload.arguments === 'string') {

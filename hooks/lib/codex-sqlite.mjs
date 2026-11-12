@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { captureSession } from './capture.mjs';
+import { humanText } from './codex-prompt.mjs';
 import { isEncryptedTask, placeholderTask } from './codex-task.mjs';
 import { openNativeDatabase } from './native-sqlite.mjs';
 import { hostPathFlavor, isUnplaceableDevicePath, joinHostPath } from './host-paths.mjs';
@@ -147,15 +148,6 @@ function parseItem(row) {
   return item;
 }
 
-function humanText(content) {
-  const text = Array.isArray(content) ? content.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n').trim() : '';
-  if (/^(?:<(?:environment_context|external_codex_apps_open_page|turn_aborted|system_reminder|user_instructions|user_shell_command|INSTRUCTIONS)>|# AGENTS\.md instructions for )/.test(text)) return '';
-  const reply = text.match(/^<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>$/);
-  if (!reply) return text;
-  try { const answers = JSON.parse(reply[1]); return Array.isArray(answers) ? answers.map(answer => answer?.answer).filter(answer => typeof answer === 'string').join('\n') : ''; }
-  catch { return ''; }
-}
-
 /** Normalize only supported content; raw reasoning, output, and patch diffs are omitted. */
 function entriesFromItems(rows, thread, ownTask, { env = process.env } = {}) {
   // Under a host path flavor tool paths keep their recorded spelling (toPosix
@@ -173,7 +165,7 @@ function entriesFromItems(rows, thread, ownTask, { env = process.env } = {}) {
     const timestamp = iso(row.completed_at_ms || row.created_at_ms);
     const content = [];
     if (item.type === 'userMessage' && !ownTask) {
-      const text = humanText(item.content);
+      const text = humanText(item.content, 'text');
       if (text) entries.push({ type: 'user', origin: { kind: 'human' }, timestamp, cwd, message: { content: text } });
       const images = Array.isArray(item.content) ? item.content.filter(block => block?.type === 'localImage' && typeof block.path === 'string') : [];
       if (images.length) entries.push({ type: 'assistant', timestamp, cwd, message: { content: images.map((image, index) => ({ type: 'tool_use', id: `${item.id}:image:${index}`, name: 'Read', input: { file_path: asRecorded(image.path) } })) } });

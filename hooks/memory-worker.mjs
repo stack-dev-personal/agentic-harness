@@ -7,7 +7,7 @@ import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-ada
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility, sessionMemoryEligibility } from './lib/memory-policy.mjs';
-import { harnessDir, loadMachineEnv } from './lib/machine-env.mjs';
+import { harnessDir, loadMachineEnv, machineName } from './lib/machine-env.mjs';
 import { hostPathFlavor } from './lib/host-paths.mjs';
 import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
@@ -16,6 +16,7 @@ import { acquirePathLock, releaseRealmLock } from './lib/realm-lock.mjs';
 import { persist } from './lib/notes-io.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { withRealmLocks } from './lib/sweep.mjs';
+import { baselineCodex } from './lib/memory-baseline.mjs';
 
 function activationTime(stateDir, now, preview) {
   const file = path.join(stateDir, 'memory-activation.json');
@@ -90,30 +91,96 @@ function previewOf(candidate, env) {
   }
 }
 
-/** All hooks use the same queue. Legacy queue names are drained during migration. */
-export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
-  preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
+/**
+ * The settings every worker mode needs, or why it must not run: switched off on
+ * purpose is a clean no-op; any other reason is a broken setting (a protected
+ * root this platform cannot read, an unknown path flavor, a missing host home or
+ * vault under a flavor), and the worker must not look healthy while it does nothing.
+ */
+function prepare({ home, env, log }) {
   const loaded = loadMachineEnv(env, home, log);
   const gate = memoryEligibility({ env: loaded });
   if (!gate.allowed) {
-    // Switched off on purpose is a clean no-op. Any other reason is a broken
-    // setting (a protected root this platform cannot read, an unknown path
-    // flavor): the worker must not look healthy while it captures nothing.
-    if (gate.reason === PERSISTENCE_DISABLED) return { disabled: true, failed: 0 };
+    if (gate.reason === PERSISTENCE_DISABLED) return { stop: { disabled: true, failed: 0 } };
     log(`memory worker blocked: ${gate.reason}; nothing was captured or ingested`);
-    return { disabled: true, failed: 1 };
+    return { stop: { disabled: true, failed: 1 } };
   }
-  // Under a host path flavor the host's home and vault are part of the
-  // configuration: without them filing would read this process's own home.
   try { hostSettings(loaded); } catch (error) {
     log(`memory worker blocked: ${error.message}; nothing was captured or ingested`);
-    return { disabled: true, failed: 1 };
+    return { stop: { disabled: true, failed: 1 } };
   }
   installExtraRulesFrom(loaded, log);
-  const vaultRoot = loaded.HARNESS_VAULT || path.join(home, 'vault');
   const stateDir = harnessDir(home);
   fs.mkdirSync(stateDir, { recursive: true });
-  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+  return { loaded, stateDir, vaultRoot: loaded.HARNESS_VAULT || path.join(home, 'vault') };
+}
+
+/**
+ * Which side runs this worker. The jobs image sets HARNESS_JOBS_CONTAINER=1;
+ * host and container share `memory-health.json` and the log, so each says who
+ * wrote it.
+ */
+export const workerSide = (env) => (env?.HARNESS_JOBS_CONTAINER === '1' ? 'container' : 'host');
+
+// The lock this process holds, for the stop handler.
+let heldLock = null;
+
+// The owner names the side, so the container's loop can tell its own lock from the host's.
+function lockWorker(stateDir, env) {
+  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: `memory worker (${workerSide(env)})`, staleMs: 90 * 60_000 });
+  if (lock.ok) heldLock = lock;
+  return lock;
+}
+
+function unlockWorker(lock) {
+  if (heldLock === lock) heldLock = null;
+  return releaseRealmLock(lock);
+}
+
+/**
+ * A stop (`docker stop`, the loop's time limit) must not leave the lock behind:
+ * it is judged stale only after 90 minutes, and until then neither the host
+ * nor the container captures anything. A run is synchronous, so the handler
+ * runs when the run yields; it releases a lock still held and exits 143.
+ */
+export function installStopHandler() {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      if (heldLock) unlockWorker(heldLock);
+      process.exit(128 + os.constants.signals[signal]);
+    });
+  }
+}
+
+/**
+ * `--baseline codex`: record each Codex rollout that its note already covers as
+ * captured (memory-baseline.mjs), so a worker that switches from the database
+ * to the rollouts does not recapture them. Run once at cutover, after the host
+ * worker's last run. `dryRun` counts without saving.
+ */
+export async function runCodexBaseline({ home = os.homedir(), env = process.env, log = () => {}, dryRun = false } = {}) {
+  const ready = prepare({ home, env, log });
+  if (ready.stop) return ready.stop;
+  const { loaded, stateDir, vaultRoot } = ready;
+  const lock = lockWorker(stateDir, loaded);
+  if (!lock.ok) return { busy: true, failed: 0 };
+  try {
+    const since = activationTime(stateDir, Date.now(), true);
+    const candidates = discoverCodexSessions({ home, vaultRoot, env: loaded, since, log });
+    const { checkpoints, counts } = baselineCodex({ candidates, vaultRoot, env: loaded });
+    if (!dryRun) saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints, env: loaded });
+    log(`baseline codex${dryRun ? ' (dry run)' : ''}: ${JSON.stringify(counts)}`);
+    return { ...counts, saved: !dryRun, failed: counts.unreadable };
+  } finally { unlockWorker(lock); }
+}
+
+/** All hooks use the same queue. Legacy queue names are drained during migration. */
+export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
+  preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
+  const ready = prepare({ home, env, log });
+  if (ready.stop) return ready.stop;
+  const { loaded, stateDir, vaultRoot } = ready;
+  const lock = lockWorker(stateDir, loaded);
   if (!lock.ok) return { busy: true, failed: 0 };
   try {
     const before = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log });
@@ -135,20 +202,52 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const health = { ...result, failed: after.failed.length + legacy.failed.length + result.errors + result.deferred + Number(result.truncated) + discoveryFailures,
       ingested: before.ingested + legacy.ingested + after.ingested };
     persist(path.join(stateDir, 'memory-health.json'), JSON.stringify({ checkedAt: new Date().toISOString(),
+      writer: `${machineName(loaded) || os.hostname()} (${workerSide(loaded)})`,
       runtimes: counts, capabilities, eligible: result.eligible, written: result.written, excluded: result.excluded, unsupported: result.unsupported,
       errors: result.errors, deferred: result.deferred, failed: health.failed, ingested: health.ingested }));
     return health;
-  } finally { releaseRealmLock(lock); }
+  } finally { unlockWorker(lock); }
+}
+
+const HEALTH_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * What `--health` reports for a health file (null when there is none yet):
+ * one more failure when it is older than 15 minutes, and in the container one
+ * more when the container did not write it. The file is shared with the host,
+ * whose runs keep it fresh while a container that is always `busy` (a host
+ * task still running) captures nothing.
+ */
+export function judgeHealth(health, { env = process.env, now = Date.now() } = {}) {
+  if (!health || typeof health !== 'object') return { failed: 1, reason: 'no health file yet' };
+  const result = { ...health };
+  if (!(now - Date.parse(result.checkedAt) <= HEALTH_MAX_AGE_MS)) result.failed = (result.failed || 0) + 1;
+  if (workerSide(env) === 'container' && !String(result.writer ?? '').endsWith('(container)')) result.failed = (result.failed || 0) + 1;
+  return result;
+}
+
+function readHealth() {
+  try { return JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8')); } catch { return null; }
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const log = createLogger(path.join(harnessDir(), 'memory-worker.log'));
+  // Host and container share this log through ~/.harness: the container says so on each line.
+  const fileLog = createLogger(path.join(harnessDir(), 'memory-worker.log'));
+  const log = workerSide(process.env) === 'container' ? (line) => fileLog(`container: ${line}`) : fileLog;
+  installStopHandler();
   try {
+    // A health check reads and reports; it never writes to the log both sides share.
     const healthOnly = process.argv.includes('--health');
-    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8'))
-      : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
-    if (healthOnly && Date.now() - Date.parse(result.checkedAt) > 15 * 60_000) result.failed = (result.failed || 0) + 1;
-    if (healthOnly || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');
+    const baseline = process.argv.indexOf('--baseline');
+    if (baseline !== -1 && process.argv[baseline + 1] !== 'codex') throw new Error('usage: memory-worker.mjs --baseline codex [--dry-run]');
+    const result = healthOnly ? judgeHealth(readHealth())
+      : baseline !== -1 ? await runCodexBaseline({ log, dryRun: process.argv.includes('--dry-run') })
+        : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
+    if (healthOnly || baseline !== -1 || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');
     if (result.failed) process.exitCode = 1;
-  } catch { log('memory worker failed; pending work retained'); process.exitCode = 1; }
+  } catch (error) {
+    if (/^usage:/.test(error?.message || '')) process.stderr.write(`${error.message}\n`);
+    else log('memory worker failed; pending work retained');
+    process.exitCode = 1;
+  }
 }

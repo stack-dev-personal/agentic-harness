@@ -242,3 +242,231 @@ test('natively, any runtime\'s entry folder inside a protected folder excludes t
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// ------------------------- a shell call's workdir is a folder the session was in
+
+const shellCall = (name, args, seconds = 3) => ({ timestamp: at(seconds), type: 'response_item',
+  payload: { type: 'function_call', name, call_id: `w${seconds}`, arguments: JSON.stringify(args) } });
+const codeModeShell = (workdirLiteral, seconds = 3) => ({ timestamp: at(seconds), type: 'response_item',
+  payload: { type: 'custom_tool_call', name: 'exec', call_id: `c${seconds}`,
+    input: `await tools.exec_command({cmd:"type notes.md", workdir:${workdirLiteral}});` } });
+const folders = (parsed) => parsed.entries.map((entry) => entry.cwd);
+/** Each workdir the parser hands the policy, with the folder it is judged from (the turn's). */
+const workdirUses = (parsed) => parsed.entries.flatMap((entry) => (Array.isArray(entry.message?.content) ? entry.message.content : [])
+  .filter((block) => block?.name === 'Workdir').map((block) => ({ path: block.input.path, cwd: entry.cwd })));
+
+test('a shell call\'s workdir goes to the policy as recorded, from the turn\'s folder, and is no folder of the note', () => {
+  const other = 'C:\\Users\\alex\\projects\\lib';
+  const parsed = extractCodexTurns([message('user', 'Look.', at(1)), turnContext(other),
+    shellCall('exec_command', { cmd: 'type a.md', workdir: '..\\lib' })], CWD, { env: FLAVOR });
+  assert.deepEqual(workdirUses(parsed), [{ path: '..\\lib', cwd: other }]);
+  assert.deepEqual([...new Set(folders(parsed))], [CWD, other], 'cwds_seen lists only folders the transcript declared');
+  const native = extractCodexTurns([shellCall('exec_command', { cmd: 'ls', workdir: 'lib' })], path.join(os.tmpdir(), 'app'));
+  assert.deepEqual(workdirUses(native), [{ path: 'lib', cwd: path.join(os.tmpdir(), 'app') }]);
+});
+
+test('a workdir that is not a non-empty string is ignored, and arguments that are not an object do not throw', () => {
+  for (const workdir of [undefined, '', 42, null, ['C:\\x'], { path: 'C:\\x' }]) {
+    assert.deepEqual(workdirUses(extractCodexTurns([shellCall('exec_command', { cmd: 'ls', workdir })], CWD, { env: FLAVOR })), [], JSON.stringify(workdir));
+  }
+  for (const raw of ['null', '[]', '"text"', '7', 'not json']) {
+    const record = { timestamp: at(3), type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'n', arguments: raw } };
+    assert.doesNotThrow(() => extractCodexTurns([record], CWD, { env: FLAVOR }), raw);
+  }
+});
+
+test('every workdir literal in a code-mode script is judged: decoys, comments, quoted keys, any call form, far from the call', () => {
+  const judged = (script) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: script } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  // A decoy before the real key no longer hides it: every key is read, the real one included.
+  assert.deepEqual(judged('await tools.exec_command({cmd:"echo workdir: \'C:/tmp\'", workdir:"C:\\\\x"});'), ['C:\\x']);
+  assert.deepEqual(judged('/* workdir: "C:/tmp" */ tools.exec_command({cmd:"ls", workdir:"C:/y"});'), ['C:/y']);
+  assert.deepEqual(judged('tools.exec_command({cmd:"ls", workdir:"C:/a"}); /* workdir: "C:/b", */'), ['C:/a', 'C:/b'], 'one that reads as a whole value counts too');
+  assert.deepEqual(judged('tools["exec_command"]({"workdir": "C:/a"}); tools.shell_command({command:"dir", \'workdir\':`C:/b`});'), ['C:/a', 'C:/b']);
+  assert.deepEqual(judged(`tools.exec_command({cmd:"${'x'.repeat(3000)}", workdir:"C:/far"});`), ['C:/far']);
+  assert.deepEqual(judged('tools.exec_command({cmd:"ls", workdir:"C:\\\\Users\\\\alex\\\\" + "private-work"});'), ['C:\\Users\\alex\\private-work'],
+    'literals joined with + are one folder');
+  assert.deepEqual(judged('tools.exec_command({cmd:"ls", working_directory:"C:/w"});'), ['C:/w']);
+});
+
+test('comments, parentheses, long chains and a lone $ do not hide a workdir literal', () => {
+  const judged = (value) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: `tools.exec_command({cmd:"ls", workdir${value}});` } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  const target = 'C:/Users/alex/private-work';
+  for (const value of [
+    ': "C:/Users/alex/" + /* j */ "private-work"', ': "C:/Users/alex/" + // j\n "private-work"', ': "C:/Users/alex/" /* c */ + "private-work"',
+    ' /* k */ : "C:/Users/alex/private-work"', ': /* v */ "C:/Users/alex/private-work"', ': // v\n"C:/Users/alex/private-work"',
+    ': ("C:/Users/alex/private-work")', ': ("C:/Users/alex/" + "private-work")', ': "C:/Users/alex/" + ("private-work")',
+    `: "C:/Users/alex/"${' + ""'.repeat(200)} + "private-work"`,
+  ]) assert.deepEqual(judged(value), [target], value);
+  assert.deepEqual(judged(': `C:/Users/alex/private-work/$/..`'), ['C:/Users/alex/private-work/$/..'], 'a $ not opening ${ is text');
+});
+
+test('a line comment ends at every JavaScript line terminator', () => {
+  const judged = (script) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: script } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  for (const end of ['\r', '\u2028', '\u2029', '\r\n']) {
+    assert.deepEqual(judged(`tools.exec_command({cmd:"ls", workdir: // note${end}"C:/Users/alex/private-work"});`), ['C:/Users/alex/private-work'], JSON.stringify(end));
+    assert.deepEqual(judged(`tools.exec_command({workdir // note${end}: "C:/Users/alex/private-work"});`), ['C:/Users/alex/private-work'], JSON.stringify(end));
+    assert.deepEqual(judged(`tools.exec_command({workdir: "C:/Users/alex/" // x${end}+ "private-work"});`), ['C:/Users/alex/private-work'], JSON.stringify(end));
+  }
+});
+
+test('an escape that only repeats its character reads as that character, as in JavaScript', () => {
+  const judged = (literal) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: `tools.exec_command({workdir: ${literal}});` } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  assert.deepEqual(judged(String.raw`"C:/Users/alex/\private-work"`), ['C:/Users/alex/private-work']);
+  assert.deepEqual(judged(String.raw`'C:/Users/alex/private\-work'`), ['C:/Users/alex/private-work']);
+  assert.deepEqual(judged(String.raw`"a\vb"`), ['a\u000bb']);
+  assert.deepEqual(judged(String.raw`"C:\\x"`), ['C:\\x'], 'a real escape keeps its meaning');
+  assert.deepEqual(judged(String.raw`"a\x41"`), [], 'a hex escape is still not read');
+});
+
+test('a patch that renames a file into the protected folder excludes the session', () => {
+  for (const indent of ['', ' ']) {
+    const patchText = ['*** Begin Patch', '*** Update File: src/a.md', `${indent}*** Move to: C:/Users/alex/private-work/a.md`, '@@', '-a', '+b', '*** End Patch'].join('\n');
+    const result = outcome([{ timestamp: at(3), type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'p', input: `await tools.apply_patch(${JSON.stringify(patchText)});` } }]);
+    assert.equal(result.action, 'excluded', JSON.stringify(indent));
+  }
+});
+
+test('a patch file header indented with spaces or a tab still names its file', () => {
+  for (const indent of ['  ', String.fromCharCode(9), ' ']) {
+    const patchText = ['*** Begin Patch', `${indent}*** Add File: C:/Users/alex/private-work/x.md`, '+hello', '*** End Patch'].join('\n');
+    const result = outcome([{ timestamp: at(3), type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'p', input: `await tools.apply_patch(${JSON.stringify(patchText)});` } }]);
+    assert.equal(result.action, 'excluded', JSON.stringify(indent));
+  }
+});
+
+test('a raw control character in a literal is read as JavaScript reads it, in a workdir and in a patch', () => {
+  const tab = String.fromCharCode(9);
+  const one = String.fromCharCode(1);
+  const judged = (literal) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: `tools.exec_command({workdir: ${literal}});` } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  assert.deepEqual(judged(`"C:/Users/alex/private-work/${tab}x"`), [`C:/Users/alex/private-work/${tab}x`]);
+  assert.deepEqual(judged(`'a${one}b'`), [`a${one}b`]);
+  assert.deepEqual(judged(String.raw`"C:/Users/alex/private-work/\8"`), ['C:/Users/alex/private-work/8'], 'an 8 escape is 8 in sloppy JavaScript');
+  const patchText = ['*** Begin Patch', '*** Add File: C:/Users/alex/private-work/x.go', `+${tab}func main() {}`, '*** End Patch'].join('\n');
+  const patch = `await tools.apply_patch(${'`'}${patchText}${'`'});`;
+  const result = outcome([{ timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'p', input: patch } }]);
+  assert.equal(result.action, 'excluded', 'a tab-indented patch still names its files');
+});
+
+test('nesting, length or work the reader will not finish refuses the session instead of judging nothing', () => {
+  const run = (value) => outcome([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: `tools.exec_command({cmd:"ls", workdir: ${value}});` } }]);
+  const deep = `${'('.repeat(200)}"C:/Users/alex/private-work"${')'.repeat(200)}`;
+  assert.equal(run(deep).skip, 'memory path policy could not be verified');
+  assert.equal(run(`"C:/Users/alex/private-work/${'a'.repeat(40_000)}"`).skip, 'memory path policy could not be verified');
+  assert.equal(run(`${'('.repeat(30)}"C:/Users/alex/private-work"${')'.repeat(30)}`).skip, 'protected path touched', 'ordinary nesting is read');
+});
+
+test('scripts shaped to make the reader re-read itself stay fast', () => {
+  const read = (script) => {
+    const started = Date.now();
+    extractCodexTurns([{ timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: script } }], CWD, { env: FLAVOR });
+    return Date.now() - started;
+  };
+  for (const script of [`${'//workdir:\n"a"+'.repeat(60_000)}"a"`, `${'workdir/*'.repeat(60_000)}`, `${'workdir: /*'.repeat(30_000)}*/"x"`,
+    `${'workdir//'.repeat(60_000)}`, `${'workdir:("a"+'.repeat(20_000)}"a"${')'.repeat(20_000)}`,
+    '//workdir\n'.repeat(100_000), `${'//workdir:\n'.repeat(50_000)}${'""+'.repeat(50_000)}""`, `${'""+//workdir:\n'.repeat(60_000)}""`,
+    `${'//workdir:\n'.repeat(30_000)}${'(""+'.repeat(30)}""${')'.repeat(30)}`,
+    `${'//workdir:\n'.repeat(30_000)}"${'a'.repeat(360_000)}`, `${'//workdir:\n'.repeat(30_000)}\`${'a'.repeat(360_000)}`,
+    `${'//workdir:\n'.repeat(30_000)}"${'a'.repeat(360_000)}${String.fromCharCode(92)}x41"`,
+    `${'//workdir:\n'.repeat(30_000)}((((\`${'a'.repeat(360_000)}`]) {
+    const ms = read(script);
+    assert.ok(ms < 3000, `${script.slice(0, 24)}… took ${ms} ms`);
+  }
+});
+
+test('a value the reader cannot finish is not judged as a part of itself', () => {
+  const judged = (value) => workdirUses(extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: `tools.exec_command({cmd:"ls", workdir: ${value}});` } }], CWD, { env: FLAVOR })).map((use) => use.path);
+  for (const value of ['"C:/Users/alex/".concat("private-work")', '"C:/x-".slice(0,-1)', '"C:/Users/alex/" + dir', '"C:/a" + 1',
+    '["C:", "x"].join("/")', 'String.raw`C:\\x`', '`C:/${dir}`']) {
+    assert.deepEqual(judged(value), [], value);
+  }
+});
+
+test('a script with a great many workdir keys is read without overflowing, one use per distinct folder', () => {
+  const script = `${'tools.exec_command({cmd:"ls", workdir:"C:/same"});'.repeat(200_000)}tools.exec_command({workdir:"C:/other"});`;
+  let parsed;
+  assert.doesNotThrow(() => { parsed = extractCodexTurns([{ timestamp: at(3), type: 'response_item',
+    payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: script } }], CWD, { env: FLAVOR }); });
+  assert.deepEqual(workdirUses(parsed).map((use) => use.path), ['C:/same', 'C:/other']);
+});
+
+test('a local shell call\'s working directory is judged too', () => {
+  const record = { timestamp: at(3), type: 'response_item', payload: { type: 'local_shell_call', call_id: 'l1', status: 'completed',
+    action: { type: 'exec', command: ['cmd', '/c', 'type notes.md'], working_directory: 'C:\\Users\\alex\\private-work' } } };
+  const parsed = extractCodexTurns([record], CWD, { env: FLAVOR });
+  assert.deepEqual(workdirUses(parsed), [{ path: 'C:\\Users\\alex\\private-work', cwd: CWD }]);
+  assert.equal(outcome([record]).action, 'excluded');
+});
+
+test('a drive-relative or rooted workdir is placed from the turn\'s folder, as Codex places it', () => {
+  // The turn moved to C:\Users\alex; `C:private-work` is then the protected folder.
+  assert.equal(outcome([turnContext('C:\\Users\\alex'), shellCall('exec_command', { cmd: 'type a', workdir: 'C:private-work' })]).action, 'excluded');
+  // Session on D:, turn on C:: a rooted workdir is on the turn's drive.
+  for (const workdir of ['\\Users\\alex\\private-work', '/Users/alex/private-work']) {
+    const result = outcome([turnContext('C:\\Users\\alex\\projects'), shellCall('exec_command', { cmd: 'type a', workdir })], 'D:\\work\\app');
+    assert.equal(result.action, 'excluded', `${workdir}: ${result.skip}`);
+  }
+});
+
+test('in the container a shell call whose workdir is the protected folder excludes the session', () => {
+  for (const workdir of [...PROTECTED_TURNS, '..\\..\\private-work', '..\\..\\PRIVAT~1\\case']) {
+    for (const name of ['exec_command', 'shell_command', 'shell']) {
+      const result = outcome([shellCall(name, { cmd: 'type notes.md', command: 'type notes.md', workdir })]);
+      assert.equal(result.action, 'excluded', `${name} in ${workdir}: ${result.skip}`);
+    }
+  }
+});
+
+test('in the container a code-mode shell call with a literal protected workdir excludes the session, any quote style', () => {
+  for (const literal of ['"C:\\\\Users\\\\alex\\\\private-work"', '\'C:/Users/alex/private-work/case\'', '`../../private-work`']) {
+    const result = outcome([codeModeShell(literal)]);
+    assert.equal(result.action, 'excluded', `${literal}: ${result.skip}`);
+  }
+});
+
+test('a workdir that text cannot place refuses the session', () => {
+  for (const workdir of ['\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\x', 'file:///C:/Users/alex/private-work']) {
+    const result = outcome([shellCall('exec_command', { cmd: 'dir', workdir })]);
+    assert.equal(result.action, 'excluded', `${workdir}: ${result.skip}`);
+  }
+});
+
+test('an ordinary workdir is captured, and the note does not repeat it', () => {
+  const w = codexWorld([shellCall('exec_command', { cmd: 'npm test', workdir: 'C:\\Users\\alex\\projects\\lib-ghp_notatoken' })]);
+  try {
+    const result = w.run();
+    assert.equal(result.written, true, `${result.action}: ${result.skip}`);
+    const raw = fs.readFileSync(result.notePath, 'utf8');
+    assert.doesNotMatch(raw, /lib-ghp_notatoken/, 'model-written folder text stays out of the note');
+    assert.doesNotMatch(raw, /Workdir/, 'a folder judged for the policy is not a tool the session used');
+  } finally { w.cleanup(); }
+});
+
+test('natively, a shell call whose workdir is inside a protected folder excludes the session', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workdir-native-'));
+  try {
+    const app = path.join(root, 'app');
+    const privateWork = path.join(root, 'private-work');
+    const vaultRoot = path.join(root, 'vault');
+    for (const dir of [app, privateWork, vaultRoot]) fs.mkdirSync(dir);
+    const transcriptPath = path.join(root, 'rollout.jsonl');
+    fs.writeFileSync(transcriptPath, [
+      { timestamp: at(0), type: 'session_meta', payload: { cwd: app } },
+      message('user', 'Read the brief.', at(1)),
+      shellCall('exec_command', { cmd: 'cat brief.md', workdir: path.join(privateWork, 'case') }),
+      message('assistant', 'Summarised.', at(9), 'final_answer'),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const env = { USERPROFILE: root, HARNESS_MEMORY_STATE_DIR: path.join(root, 'state'), HARNESS_MEMORY_EXCLUDED_ROOTS: JSON.stringify([privateWork]) };
+    const result = captureCodex({ input: { sessionId: randomUUID(), transcriptPath, cwd: app, hookEventName: 'SessionEnd', endReason: 'other' },
+      vaultRoot, home: root, env, stateDir: path.join(root, 'state', 'session-start'), runGit: () => ({ ok: false, stdout: '' }) });
+    assert.equal(result.action, 'excluded', result.skip);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

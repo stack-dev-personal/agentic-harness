@@ -100,6 +100,45 @@ test('Codex code-mode activity becomes the shared commands, files, and retrieval
   assert.ok(!JSON.stringify(parsed.entries).includes('raw-secret-from-tool'));
 });
 
+test('a code-mode search whose result a script wrapped in a settled promise is still a retrieval', () => {
+  const fixture = fs.readFileSync(new URL('./fixtures/rag-results/search-one.txt', import.meta.url), 'utf8');
+  const settled = { status: 'fulfilled', value: { content: [{ type: 'text', text: fixture }] } };
+  for (const [label, wrapped] of [
+    ['allSettled item', { i: 0, ...settled }],
+    ['nested result', { i: 0, result: settled }],
+    ['the settled array printed whole', [{ status: 'rejected', reason: 'x' }, settled]],
+  ]) {
+    const records = [
+      message('user', 'Find ledger invariants.', at(1)),
+      { timestamp: at(2), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1',
+        input: 'const out=await Promise.allSettled([tools.exec_command({cmd:"git status"}), tools.mcp__rag__search_context({query:"ledger invariants"})]); text(out);' } },
+      { timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: [
+        { type: 'input_text', text: JSON.stringify({ i: 1, status: 'fulfilled', value: { chunk_id: 'x', output: 'raw-secret-from-tool', wall_time_seconds: 1 } }) },
+        { type: 'input_text', text: JSON.stringify(wrapped) },
+      ] } },
+      message('assistant', 'The ledger is consistent.', at(4), 'final_answer'),
+    ];
+    const searches = extractRetrievals(extractCodexTurns(records, 'C:/work/demo').entries);
+    assert.equal(searches.records.length, 1, label);
+    assert.equal(searches.records[0].query, 'ledger invariants', label);
+    assert.equal(searches.hits.length, 1, label);
+  }
+});
+
+test('a failed code-mode search is no retrieval, whatever text it carries', () => {
+  const fixture = fs.readFileSync(new URL('./fixtures/rag-results/search-one.txt', import.meta.url), 'utf8');
+  const records = [
+    message('user', 'Find ledger invariants.', at(1)),
+    { timestamp: at(2), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1',
+      input: 'const r=await Promise.allSettled([tools.mcp__rag__search_context({query:"ledger invariants"})]); text(r);' } },
+    { timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: [
+      { type: 'input_text', text: JSON.stringify({ i: 0, status: 'fulfilled', value: { isError: true, content: [{ type: 'text', text: fixture }] } }) },
+    ] } },
+  ];
+  const searches = extractRetrievals(extractCodexTurns(records, 'C:/work/demo').entries);
+  assert.equal(searches.hits.length, 0);
+});
+
 test('Codex capture writes a redacted vault note, replays safely, and chains a resumed chat', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-capture-'));
   try {
@@ -355,7 +394,8 @@ test('literalArgument decodes string literals and refuses anything else', () => 
   assert.equal(literalArgument(String.raw`"a\nb")`), 'a\nb');
   assert.equal(literalArgument(String.raw`'it\'s "q""')`), 'it\'s "q""');
   assert.equal(literalArgument('`line1\nline2`)'), 'line1\nline2');
-  assert.equal(literalArgument(String.raw`"C:\work")`), null, 'an escape JSON lacks fails closed');
+  assert.equal(literalArgument(String.raw`"C:\work")`), 'C:work', 'an identity escape is its character, as JavaScript reads it');
+  assert.equal(literalArgument(String.raw`"C:\x41")`), null, 'a hex escape JSON lacks is not read');
   assert.equal(literalArgument('`${x}`)'), null);
   assert.equal(literalArgument('patchText)'), null);
 });
@@ -365,6 +405,45 @@ test('Codex-injected user blocks are not human prompts', () => {
   assert.equal(humanPrompt('<user_instructions>be terse</user_instructions>'), '');
   assert.equal(humanPrompt('<user_shell_command>git status</user_shell_command>'), '');
   assert.equal(humanPrompt('What changed today?'), 'What changed today?');
+});
+
+test('a rollout note names the provider from the session head when turns do not', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-'));
+  try {
+    const vaultRoot = path.join(root, 'vault');
+    const cwd = path.join(root, 'demo');
+    fs.mkdirSync(vaultRoot); fs.mkdirSync(cwd);
+    const sessionId = randomUUID();
+    const transcriptPath = path.join(root, 'rollout.jsonl');
+    const write = (context) => fs.writeFileSync(transcriptPath, [
+      { timestamp: at(0), type: 'session_meta', payload: { id: sessionId, cwd, model_provider: 'provider-head' } },
+      { timestamp: at(0), type: 'turn_context', payload: { cwd, model: 'model-turn', ...context } },
+      message('user', 'Name the provider.', at(1)),
+      message('assistant', 'Named.', at(2), 'final_answer'),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const capture = () => captureCodex({ input: { sessionId, transcriptPath, cwd, hookEventName: 'SessionEnd', endReason: 'resume' },
+      vaultRoot, home: root, env: { USERPROFILE: root } });
+    write({});
+    let fields = parseFrontmatter(fs.readFileSync(capture().notePath, 'utf8')).fields;
+    assert.equal(fields.provider, 'provider-head');
+    assert.equal(fields.model, 'model-turn');
+    write({ model_provider: 'provider-turn' });
+    fields = parseFrontmatter(fs.readFileSync(capture().notePath, 'utf8')).fields;
+    assert.equal(fields.provider, 'provider-turn', 'the latest turn wins when it names one');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rollout skill and AGENTS.md blocks never become prompts in the note', () => {
+  const { entries } = extractCodexTurns([
+    { type: 'session_meta', timestamp: at(0), payload: { id: 'injected', cwd: 'C:/repo' } },
+    message('user', '# AGENTS.md instructions\n\n<INSTRUCTIONS>be terse</INSTRUCTIONS>', at(1)),
+    message('user', '<skill>\n<name>release-notes</name>\n</skill>', at(2)),
+    message('user', 'Summarise the release.', at(3)),
+  ], 'C:/repo', { env: {} });
+  const prompts = entries.filter((entry) => entry.type === 'user').map((entry) => entry.message.content);
+  assert.deepEqual(prompts, ['Summarise the release.']);
 });
 
 test('Codex capture fails closed when the transcript head is not session_meta', () => {

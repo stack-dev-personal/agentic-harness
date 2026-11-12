@@ -16,6 +16,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { SYNC_FETCH_TIMEOUT_MS } from '../lib/realm-steps.mjs';
+import { composeService } from './helpers/compose-service.mjs';
 import { EMPTY_STATE, JOB_COLLECT, JOB_NIGHTLY, serializeState, withStart } from '../lib/schedule.mjs';
 import {
   DEFAULT_STATE_FILE,
@@ -906,12 +907,15 @@ test('in the jobs container the nightly never sweeps transcripts or session-star
   assert.match(night.log, /finished \(realms-pull 0, transcripts 0, state 0, checkpoints 0,/, 'the summary keeps its nine fields');
 });
 
-test('the jobs image marks itself, and compose mounts no transcripts folder', () => {
+test('the jobs image marks itself, and the nightly service mounts no transcripts folder', () => {
   const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'jobs', 'Dockerfile'), 'utf8');
-  const compose = fs.readFileSync(path.join(REPO, 'compose.yaml'), 'utf8');
+  // The service that holds the realm token never sees transcripts; harness-memory
+  // (compose-memory.test.mjs) is the one that does, without the token.
+  const jobs = composeService(fs.readFileSync(path.join(REPO, 'compose.yaml'), 'utf8'), 'harness-jobs');
   assert.match(dockerfile, /^\s+HARNESS_JOBS_CONTAINER=1 \\?$/m);
-  assert.ok(!compose.includes('CLAUDE_PROJECTS_DIR'), 'compose.yaml still names CLAUDE_PROJECTS_DIR');
-  assert.ok(!compose.includes('.claude/projects'), 'compose.yaml still mounts a .claude/projects folder');
+  assert.ok(!jobs.includes('CLAUDE_PROJECTS_DIR'), 'harness-jobs still names CLAUDE_PROJECTS_DIR');
+  assert.ok(!jobs.includes('.claude/projects'), 'harness-jobs still mounts a .claude/projects folder');
+  assert.ok(!jobs.includes('.codex'), 'harness-jobs mounts a Codex folder');
   assert.ok(!dockerfile.includes('.claude/projects'), 'the image still makes a mount point for transcripts');
 });
 

@@ -116,8 +116,31 @@ directory and follow junctions. Every folder a transcript entry ran in is
 judged, not only the files its tools named: a turn that only talked, or ran a
 shell command, inside a protected folder excludes the session. A Codex turn's
 own working directory (`turn_context`) is the one its later entries carry and
-its relative paths are joined to. Not judged: the `workdir` argument of a
-shell tool call, and paths inside a shell command's text. Neither secret redaction nor a label-scanning
+its relative paths are joined to. A Codex shell call's working folder is a
+folder the session was in too, and is judged from the turn's folder the way
+Codex places it (relative, drive-relative and rooted spellings included): a
+direct call's `workdir`, a local shell call's `working_directory`, and every
+`workdir:` or `working_directory:` in a code-mode script whose whole value is
+string literals (joined with `+`, in parentheses, with comments anywhere
+between), wherever it appears in the script. It is not listed in the note's
+`cwds_seen`, which keeps only folders the transcript declared. Not judged from
+a rollout, because the script is read as text and never run: a value that is
+not literals to its end (a variable, a template with `${}`, a method call such
+as `.concat()`, `||`, `??`, a ternary), a literal with a hex, code point or
+octal escape or a line continuation, a computed or escaped key, and paths
+inside a shell command's text. Other escapes read as JavaScript reads them.
+On 2026-11-12 all 3,832 such values in 115 real rollouts were literals. A
+value nested in more than 64 parentheses, longer than 32,767 characters, or in
+a script that would take the reader more than 16 steps per character refuses
+the session rather than going unjudged. A literal `apply_patch` body names its
+files on `*** Add File:`, `*** Update File:`, `*** Delete File:` and
+`*** Move to:` lines, indented or not. The Codex database
+judges each command's resolved folder and the paths Codex parses out of it.
+Natively on Windows the check resolves real paths, which keeps an 8.3 short
+name, a trailing dot, a `::$INDEX_ALLOCATION` suffix and an administrative
+share (`\\localhost\C$\...`) as written; the text rules used under a flavor
+read those as the folder they name. A fix in both policies is planned
+separately. Neither secret redaction nor a label-scanning
 regular expression establishes that arbitrary content is unrestricted.
 
 ### Judging another operating system's paths
@@ -208,6 +231,23 @@ Under a flavor two more settings are required, each a plain drive path:
 The worker also skips Hermes and never opens the Codex database under a flavor;
 Codex rollout files cover those sessions.
 
+A rollout gives the same note as the database for prompts, delegated task line
+(an encrypted spawn prompt becomes the placeholder on both), provider and
+retrievals, including a search a code-mode script wrapped in
+`Promise.allSettled`. What the rollout cannot give, because the adapter reads
+code-mode scripts as text and never runs them:
+
+- a path, command or search argument held in a variable rather than written as a
+  literal (on 2026-11-11, 12 of 149 rollouts had such a call; 4 of them built
+  `apply_patch` text at run time, 23 files in 5 notes that the database names);
+- more than one search in one script, which is recorded as none;
+- a search whose result the script reduced before printing it (the database
+  keeps the raw result; the rollout only what the script printed). On
+  2026-11-11 that left 23 retrieval records in 10 notes that only the database has.
+
+The database records these as structured items, so the host sees them and the
+path policy judges them. From a rollout, the policy sees only the literal ones.
+
 State the host and the container share through one `~/.harness`:
 
 - **Ingest queue** lines are `{"note": "<area>/<collection>/sessions/<id>.md"}`,
@@ -224,6 +264,36 @@ State the host and the container share through one `~/.harness`:
 `memory-worker --preview` lists, for each session, the folder filing would use
 and why (`basis`: note, record, parent or rules), or only that it is excluded.
 Run it on the host and in the container and compare.
+
+### The worker in a container: `harness-memory`
+
+`compose.yaml` defines the service, behind the profile `memory`;
+`hooks/memory-loop.mjs` runs the worker every five minutes and within 30 s of
+new queue entries. Its health file and log lines name their writer
+(`writer: "<machine> (container)"`, `container:`), since they are shared with
+the host. A stop (`docker stop`, the loop's 30-minute limit) lets the run finish
+its synchronous step and release `memory-worker.lock`.
+
+Cutover, in this order; the host task and the service must never both run:
+
+1. In the host's `~/.harness/machine.env`, set `HARNESS_MEMORY_START_WORKER=0`.
+   Make sure `~/.codex/archived_sessions` exists (Codex creates it only on its
+   first archive; create it empty if it is missing): the service mounts it and
+   creates no host folder itself.
+2. Let `AgenticHarness-Memory` finish a run, then
+   `Disable-ScheduledTask AgenticHarness-Memory` (disable, never delete).
+3. Baseline the Codex rollouts, first as a dry run, from the umbrella folder:
+   `docker compose --profile memory run --rm harness-memory node hooks/memory-worker.mjs --baseline codex --dry-run`,
+   then the same without `--dry-run`. It records each rollout its note already
+   covers, so the first container run does not recapture threads the host
+   captured from the Codex database. A rollout with a later turn than its note
+   is left for capture: that turn is content the database never recorded.
+4. `docker compose --profile memory up -d harness-memory`; watch
+   `docker compose logs -f harness-memory` and `memory-health.json`.
+
+Rollback: `docker compose stop harness-memory`, then
+`Enable-ScheduledTask AgenticHarness-Memory` and remove
+`HARNESS_MEMORY_START_WORKER=0`.
 
 These controls govern the harness. They cannot undo native transcript writes or
 remote model requests that already occurred. Before restricted work, each native

@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { UNSUPPORTED_GENERATION, checkpointSessions, saveMemoryCheckpoints } from '../lib/memory-checkpoints.mjs';
+import { TRIVIAL_GENERATION, UNSUPPORTED_GENERATION, checkpointSessions, saveMemoryCheckpoints } from '../lib/memory-checkpoints.mjs';
 
 function outcome(action, skip) {
   return { written: false, action, skip, notePath: '', touchedPaths: [] };
@@ -96,6 +96,44 @@ test('an unsupported verdict from an older generation is looked at again once', 
     assert.equal(result.written, 1);
     assert.equal(result.unsupported, 0);
     assert.deepEqual(result.checkpoints['codex:codex-child'].paths, [note]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('a trivial session is remembered at its revision and not reopened until it changes', () => {
+  const s = sandbox();
+  try {
+    let opened = 0;
+    const candidate = (fingerprint, skip) => ({ runtime: 'codex', sessionId: `codex-${skip.length}`, fingerprint,
+      capture: () => { opened += 1; return outcome('skip', skip); } });
+    for (const skip of ['subagent did nothing; assignment not recorded', 'no user prompts (trivial session)']) {
+      opened = 0;
+      const first = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('a', skip)] });
+      assert.equal(first.errors, 0);
+      assert.deepEqual(first.checkpoints[`codex:codex-${skip.length}`], { fingerprint: 'a', paths: [], trivial: true, generation: TRIVIAL_GENERATION });
+      saveMemoryCheckpoints({ stateDir: s.stateDir, vaultRoot: s.vaultRoot, checkpoints: first.checkpoints });
+      const again = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('a', skip)] });
+      assert.equal(again.eligible, 0, `${skip}: not reopened at the same revision`);
+      const changed = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('b', skip)] });
+      assert.equal(changed.eligible, 1, `${skip}: a new revision is looked at again`);
+      assert.equal(opened, 2);
+    }
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('a trivial verdict from an older generation is looked at again once', () => {
+  const s = sandbox();
+  try {
+    let opened = 0;
+    const candidate = { runtime: 'codex', sessionId: 'codex-old', fingerprint: 'a',
+      capture: () => { opened += 1; return outcome('skip', 'no user prompts (trivial session)'); } };
+    saveMemoryCheckpoints({ stateDir: s.stateDir, vaultRoot: s.vaultRoot,
+      checkpoints: { 'codex:codex-old': { fingerprint: 'a', paths: [], trivial: true, generation: TRIVIAL_GENERATION - 1 } } });
+    assert.equal(checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate] }).eligible, 1);
+    assert.equal(opened, 1);
   } finally {
     s.cleanup();
   }

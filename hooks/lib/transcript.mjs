@@ -338,8 +338,15 @@ function label(text, max = MAX_COMMAND_CHARS) {
   return redact(String(text ?? '').trim()).slice(0, max);
 }
 
+/**
+ * A working folder handed to the path policy as a tool use (codex-session-capture.mjs).
+ * It judges a place; it is no tool the session used, so it is not counted.
+ */
+export const WORKDIR_TOOL = 'Workdir';
+
 function recordToolUse(block, into) {
   const name = String(block.name || 'unknown');
+  if (name === WORKDIR_TOOL) return;
   into.toolCounts.set(name, (into.toolCounts.get(name) || 0) + 1);
 
   const args = block.input && typeof block.input === 'object' ? block.input : {};

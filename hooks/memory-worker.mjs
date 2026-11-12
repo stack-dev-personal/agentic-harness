@@ -7,7 +7,7 @@ import { discoverClaudeSessions, discoverCodexSessions } from './lib/runtime-ada
 import { checkpointSessions, saveMemoryCheckpoints } from './lib/memory-checkpoints.mjs';
 import { drainIngest, queueIngest } from './lib/ingest-queue.mjs';
 import { PERSISTENCE_DISABLED, memoryEligibility, sessionMemoryEligibility } from './lib/memory-policy.mjs';
-import { harnessDir, loadMachineEnv } from './lib/machine-env.mjs';
+import { harnessDir, loadMachineEnv, machineName } from './lib/machine-env.mjs';
 import { hostPathFlavor } from './lib/host-paths.mjs';
 import { hostSettings } from './lib/host-settings.mjs';
 import { installExtraRulesFrom } from './lib/redact-extra.mjs';
@@ -115,6 +115,13 @@ function prepare({ home, env, log }) {
   return { loaded, stateDir, vaultRoot: loaded.HARNESS_VAULT || path.join(home, 'vault') };
 }
 
+/**
+ * Which side runs this worker. The jobs image sets HARNESS_JOBS_CONTAINER=1;
+ * host and container share `memory-health.json` and the log, so each says who
+ * wrote it.
+ */
+export const workerSide = (env) => (env?.HARNESS_JOBS_CONTAINER === '1' ? 'container' : 'host');
+
 const lockWorker = (stateDir) => acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
 
 /**
@@ -167,6 +174,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
     const health = { ...result, failed: after.failed.length + legacy.failed.length + result.errors + result.deferred + Number(result.truncated) + discoveryFailures,
       ingested: before.ingested + legacy.ingested + after.ingested };
     persist(path.join(stateDir, 'memory-health.json'), JSON.stringify({ checkedAt: new Date().toISOString(),
+      writer: `${machineName(loaded) || os.hostname()} (${workerSide(loaded)})`,
       runtimes: counts, capabilities, eligible: result.eligible, written: result.written, excluded: result.excluded, unsupported: result.unsupported,
       errors: result.errors, deferred: result.deferred, failed: health.failed, ingested: health.ingested }));
     return health;
@@ -174,7 +182,9 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const log = createLogger(path.join(harnessDir(), 'memory-worker.log'));
+  // Host and container share this log through ~/.harness: the container says so on each line.
+  const fileLog = createLogger(path.join(harnessDir(), 'memory-worker.log'));
+  const log = workerSide(process.env) === 'container' ? (line) => fileLog(`container: ${line}`) : fileLog;
   try {
     const healthOnly = process.argv.includes('--health');
     const baseline = process.argv.indexOf('--baseline');

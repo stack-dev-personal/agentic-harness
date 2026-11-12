@@ -242,6 +242,33 @@ State the host and the container share through one `~/.harness`:
 and why (`basis`: note, record, parent or rules), or only that it is excluded.
 Run it on the host and in the container and compare.
 
+### The worker in a container: `harness-memory`
+
+`compose.yaml` defines the service, behind the profile `memory`;
+`hooks/memory-loop.mjs` runs the worker every five minutes and within 30 s of
+new queue entries. Its health file and log lines name their writer
+(`writer: "<machine> (container)"`, `container:`), since they are shared with
+the host. A stop (`docker stop`, the loop's 30-minute limit) lets the run finish
+its synchronous step and release `memory-worker.lock`.
+
+Cutover, in this order; the host task and the service must never both run:
+
+1. In the host's `~/.harness/machine.env`, set `HARNESS_MEMORY_START_WORKER=0`.
+2. Let `AgenticHarness-Memory` finish a run, then
+   `Disable-ScheduledTask AgenticHarness-Memory` (disable, never delete).
+3. Baseline the Codex rollouts, first as a dry run, from the umbrella folder:
+   `docker compose --profile memory run --rm harness-memory node hooks/memory-worker.mjs --baseline codex --dry-run`,
+   then the same without `--dry-run`. It records each rollout its note already
+   covers, so the first container run does not recapture threads the host
+   captured from the Codex database. A rollout with a later turn than its note
+   is left for capture: that turn is content the database never recorded.
+4. `docker compose --profile memory up -d harness-memory`; watch
+   `docker compose logs -f harness-memory` and `memory-health.json`.
+
+Rollback: `docker compose stop harness-memory`, then
+`Enable-ScheduledTask AgenticHarness-Memory` and remove
+`HARNESS_MEMORY_START_WORKER=0`.
+
 These controls govern the harness. They cannot undo native transcript writes or
 remote model requests that already occurred. Before restricted work, each native
 runtime must independently have verified history/memory suppression and local-only

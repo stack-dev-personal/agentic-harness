@@ -301,7 +301,9 @@ export function captureCodex({
   const latestContext = records.findLast(record => record.type === 'turn_context')?.payload;
   return captureSession({ input: { ...input, cwd, transcriptPath, sessionId: `codex-${input.sessionId}` },
     vaultRoot, entries: parsed.entries, runGit, capturedBy, stateDir, deadlineAt, env,
-    agent: 'codex', runtime: 'codex', model: latestContext?.model || '', provider: latestContext?.model_provider || '',
+    agent: 'codex', runtime: 'codex',
+    // Codex 0.166 names the provider in the session head only, not per turn.
+    model: latestContext?.model || '', provider: latestContext?.model_provider || head.payload?.model_provider || '',
     origin: parsed.origin, generator: GENERATOR,
     briefSessionId: input.sessionId,
     parentSession: parent ? `codex-${parent}` : '', childSessions,

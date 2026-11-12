@@ -367,6 +367,34 @@ test('Codex-injected user blocks are not human prompts', () => {
   assert.equal(humanPrompt('What changed today?'), 'What changed today?');
 });
 
+test('a rollout note names the provider from the session head when turns do not', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-'));
+  try {
+    const vaultRoot = path.join(root, 'vault');
+    const cwd = path.join(root, 'demo');
+    fs.mkdirSync(vaultRoot); fs.mkdirSync(cwd);
+    const sessionId = randomUUID();
+    const transcriptPath = path.join(root, 'rollout.jsonl');
+    const write = (context) => fs.writeFileSync(transcriptPath, [
+      { timestamp: at(0), type: 'session_meta', payload: { id: sessionId, cwd, model_provider: 'provider-head' } },
+      { timestamp: at(0), type: 'turn_context', payload: { cwd, model: 'model-turn', ...context } },
+      message('user', 'Name the provider.', at(1)),
+      message('assistant', 'Named.', at(2), 'final_answer'),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const capture = () => captureCodex({ input: { sessionId, transcriptPath, cwd, hookEventName: 'SessionEnd', endReason: 'resume' },
+      vaultRoot, home: root, env: { USERPROFILE: root } });
+    write({});
+    let fields = parseFrontmatter(fs.readFileSync(capture().notePath, 'utf8')).fields;
+    assert.equal(fields.provider, 'provider-head');
+    assert.equal(fields.model, 'model-turn');
+    write({ model_provider: 'provider-turn' });
+    fields = parseFrontmatter(fs.readFileSync(capture().notePath, 'utf8')).fields;
+    assert.equal(fields.provider, 'provider-turn', 'the latest turn wins when it names one');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('rollout skill and AGENTS.md blocks never become prompts in the note', () => {
   const { entries } = extractCodexTurns([
     { type: 'session_meta', timestamp: at(0), payload: { id: 'injected', cwd: 'C:/repo' } },

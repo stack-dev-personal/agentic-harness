@@ -116,8 +116,31 @@ directory and follow junctions. Every folder a transcript entry ran in is
 judged, not only the files its tools named: a turn that only talked, or ran a
 shell command, inside a protected folder excludes the session. A Codex turn's
 own working directory (`turn_context`) is the one its later entries carry and
-its relative paths are joined to. Not judged: the `workdir` argument of a
-shell tool call, and paths inside a shell command's text. Neither secret redaction nor a label-scanning
+its relative paths are joined to. A Codex shell call's working folder is a
+folder the session was in too, and is judged from the turn's folder the way
+Codex places it (relative, drive-relative and rooted spellings included): a
+direct call's `workdir`, a local shell call's `working_directory`, and every
+`workdir:` or `working_directory:` in a code-mode script whose whole value is
+string literals (joined with `+`, in parentheses, with comments anywhere
+between), wherever it appears in the script. It is not listed in the note's
+`cwds_seen`, which keeps only folders the transcript declared. Not judged from
+a rollout, because the script is read as text and never run: a value that is
+not literals to its end (a variable, a template with `${}`, a method call such
+as `.concat()`, `||`, `??`, a ternary), a literal with a hex, code point or
+octal escape or a line continuation, a computed or escaped key, and paths
+inside a shell command's text. Other escapes read as JavaScript reads them.
+On 2026-11-12 all 3,832 such values in 115 real rollouts were literals. A
+value nested in more than 64 parentheses, longer than 32,767 characters, or in
+a script that would take the reader more than 16 steps per character refuses
+the session rather than going unjudged. A literal `apply_patch` body names its
+files on `*** Add File:`, `*** Update File:`, `*** Delete File:` and
+`*** Move to:` lines, indented or not. The Codex database
+judges each command's resolved folder and the paths Codex parses out of it.
+Natively on Windows the check resolves real paths, which keeps an 8.3 short
+name, a trailing dot, a `::$INDEX_ALLOCATION` suffix and an administrative
+share (`\\localhost\C$\...`) as written; the text rules used under a flavor
+read those as the folder they name. A fix in both policies is planned
+separately. Neither secret redaction nor a label-scanning
 regular expression establishes that arbitrary content is unrestricted.
 
 ### Judging another operating system's paths

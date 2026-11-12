@@ -393,7 +393,8 @@ test('literalArgument decodes string literals and refuses anything else', () => 
   assert.equal(literalArgument(String.raw`"a\nb")`), 'a\nb');
   assert.equal(literalArgument(String.raw`'it\'s "q""')`), 'it\'s "q""');
   assert.equal(literalArgument('`line1\nline2`)'), 'line1\nline2');
-  assert.equal(literalArgument(String.raw`"C:\work")`), null, 'an escape JSON lacks fails closed');
+  assert.equal(literalArgument(String.raw`"C:\work")`), 'C:work', 'an identity escape is its character, as JavaScript reads it');
+  assert.equal(literalArgument(String.raw`"C:\x41")`), null, 'a hex escape JSON lacks is not read');
   assert.equal(literalArgument('`${x}`)'), null);
   assert.equal(literalArgument('patchText)'), null);
 });

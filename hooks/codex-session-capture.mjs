@@ -40,11 +40,14 @@ function textBlocks(content, type) {
 /** Which user turns a person typed: shared with the SQLite adapter (codex-prompt.mjs). */
 export { humanPrompt };
 
+const plainObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : null);
+
+/** A call's arguments as an object; `{}` for anything else (`null`, a list, unparseable text). */
 function toolArgs(payload) {
   if (payload?.arguments && typeof payload.arguments === 'string') {
-    try { return JSON.parse(payload.arguments); } catch { return {}; }
+    try { return plainObject(JSON.parse(payload.arguments)) ?? {}; } catch { return {}; }
   }
-  return payload?.input && typeof payload.input === 'object' && !Array.isArray(payload.input) ? payload.input : {};
+  return plainObject(payload?.input) ?? {};
 }
 
 function literalField(source, key) {
@@ -60,7 +63,9 @@ function toolUse(id, name, input) {
 /** This platform's own rules: right for a session recorded where it is read. */
 const nativeJoin = (cwd, raw) => (path.isAbsolute(raw) ? raw : path.resolve(cwd, raw));
 
-const PATCH_FILE_LINE = /^\*\*\* (?:Add|Update|Delete|Move to) File: (.+)$/gm;
+// A header may be indented: reading it judges one more path, never one fewer.
+// A rename's destination is `*** Move to: <path>` in Codex's patch format.
+const PATCH_FILE_LINE = /^[ \t]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm;
 
 /** The files a decoded apply_patch body names, as `Write` uses; nothing else of the patch is kept. */
 function patchFileUses(patch, idPrefix, cwd, startIndex, joinPath = nativeJoin) {
@@ -75,10 +80,12 @@ function patchFileUses(patch, idPrefix, cwd, startIndex, joinPath = nativeJoin) 
   return uses;
 }
 
+// Sticky: each is tried at one position of the script, never on a copy of its tail.
+// A template is read when it holds no `${`; a `$` on its own is text.
 const STRING_LITERALS = {
-  '"': /^"((?:\\.|[^"\\])*)"/s,
-  "'": /^'((?:\\.|[^'\\])*)'/s,
-  '`': /^`((?:\\.|[^`\\$])*)`/s,
+  '"': /"((?:\\.|[^"\\])*)"/sy,
+  "'": /'((?:\\.|[^'\\])*)'/sy,
+  '`': /`((?:\\.|\$(?!\{)|[^`\\$])*)`/sy,
 };
 
 /**
@@ -87,17 +94,170 @@ const STRING_LITERALS = {
  * Decoded with JSON.parse, never evaluated.
  */
 export function literalArgument(source) {
-  const quote = source[0];
-  const pattern = STRING_LITERALS[quote];
+  return readLiteralAt(source, 0)?.value ?? null;
+}
+
+/** The string literal starting at `at`: its value and where it ends; null when there is none to read. */
+function readLiteralAt(source, at) {
+  const pattern = STRING_LITERALS[source[at]];
   if (!pattern) return null;
+  pattern.lastIndex = at;
   const match = pattern.exec(source);
   if (!match) return null;
   try {
-    return JSON.parse(`"${toJsonBody(match[1])}"`);
+    return { value: JSON.parse(`"${toJsonBody(match[1])}"`), end: at + match[0].length };
   } catch {
     return null; // an escape JSON lacks (\x41, \v, …): unreadable, so no paths
   }
 }
+
+// What may follow a whole value: the next argument or property, a closing
+// bracket, the end of a statement or of the script.
+const VALUE_END = new Set([',', '}', ')', ']', ';', undefined]);
+// A working folder named in a code-mode script, under any key spelling Codex
+// tools use, quoted or not, wherever it appears.
+const WORKDIR_KEY = /(?:\b(?:workdir|working_directory)|(["'`])(?:workdir|working_directory)\1)/g;
+// Limits on what the reader will do for one script. Past any of them the
+// value is not read and the session is refused, never captured unjudged.
+const MAX_PAREN_DEPTH = 64;
+const MAX_VALUE_CHARS = 32_767; // the longest Windows path
+const WORK_PER_SCRIPT_CHAR = 16;
+const UNREADABLE = Symbol('unreadable');
+// Handed to the policy for a working folder the reader would not finish: a NUL
+// cannot be in a path, and the policy refuses it as unverifiable everywhere.
+export const UNREADABLE_WORKDIR = "\u0000working folder the reader did not finish";
+
+/** Sorted positions of `pattern` in `text`, found once per script. */
+function positions(text, pattern) {
+  return Array.from(text.matchAll(pattern), (match) => match.index);
+}
+
+/** The first position in sorted `list` at or after `from`, or -1. */
+function nextAt(list, from) {
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (list[middle] < from) low = middle + 1; else high = middle;
+  }
+  return low < list.length ? list[low] : -1;
+}
+
+/**
+ * The literal working folders of one code-mode script, read as text and never
+ * run. Linear in the script: comment ends are looked up, and a `+` chain read
+ * from one key is not read again from the next (`chains`).
+ *
+ * @returns {{ values: string[], unverifiable: boolean }}
+ */
+function scriptWorkdirs(script) {
+  const length = script.length;
+  const commentCloses = positions(script, /\*\//g);
+  // JavaScript ends a line comment at any line terminator, not only LF.
+  const lineEnds = positions(script, /[\n\r\u2028\u2029]/g);
+  let budget = WORK_PER_SCRIPT_CHAR * length + 1_000_000;
+  const chains = new Map();
+
+  // Where trivia starting at each comment ends, so a run of comments is walked once
+  // however many keys start inside it.
+  const skipped = new Map();
+  const skip = (at) => {
+    let index = at;
+    const walked = [];
+    let result;
+    for (;;) {
+      while (index < length && /\s/.test(script[index])) index += 1;
+      if (skipped.has(index)) { result = skipped.get(index); break; }
+      if (script.startsWith('/*', index)) {
+        walked.push(index);
+        const close = nextAt(commentCloses, index + 2);
+        if (close === -1) { result = length; break; }
+        index = close + 2;
+      } else if (script.startsWith('//', index)) {
+        walked.push(index);
+        const end = nextAt(lineEnds, index + 2);
+        if (end === -1) { result = length; break; }
+        index = end + 1;
+      } else { result = index; break; }
+    }
+    for (const start of walked) skipped.set(start, result);
+    return result;
+  };
+
+  // A chain is a linked list from its first operand: { value, rest, chars, links, end }.
+  // Joining one costs a step per link, charged to the budget.
+  const join = (chain) => {
+    let text = '';
+    for (let link = chain; link; link = link.rest) text += link.value;
+    return text;
+  };
+
+  const operandAt = (at, depth) => {
+    if (script[at] !== '(') return readLiteralAt(script, at);
+    if (depth >= MAX_PAREN_DEPTH) return UNREADABLE;
+    const inner = chainAt(skip(at + 1), depth + 1);
+    if (!inner || inner === UNREADABLE) return inner;
+    budget -= inner.links + inner.chars;
+    if (inner.chars > MAX_VALUE_CHARS || budget < 0) return UNREADABLE;
+    const close = skip(inner.end);
+    return script[close] === ')' ? { value: join(inner), end: close + 1 } : null;
+  };
+
+  // Literals joined with `+` from `start`; null when one is not a literal.
+  const chainAt = (start, depth) => {
+    const pending = [];
+    let at = start;
+    let tail;
+    for (;;) {
+      if (chains.has(at)) { tail = chains.get(at); break; }
+      budget -= 1;
+      const operand = budget < 0 ? UNREADABLE : operandAt(at, depth);
+      // A failed start is remembered too: every key that reaches it would read it again.
+      if (!operand || operand === UNREADABLE) { tail = operand; chains.set(at, operand); break; }
+      const plus = skip(operand.end);
+      pending.push({ at, operand });
+      if (script[plus] !== '+') { tail = undefined; break; }
+      at = skip(plus + 1);
+    }
+    for (let index = pending.length - 1; index >= 0; index -= 1) {
+      const { at: from, operand } = pending[index];
+      const chain = tail === null || tail === UNREADABLE ? tail
+        : { value: operand.value, rest: tail, chars: operand.value.length + (tail?.chars ?? 0),
+          links: 1 + (tail?.links ?? 0), end: tail?.end ?? operand.end };
+      chains.set(from, chain);
+      tail = chain;
+    }
+    return tail ?? null;
+  };
+
+  const values = new Set();
+  let unverifiable = false;
+  for (const match of script.matchAll(WORKDIR_KEY)) {
+    const colon = skip(match.index + match[0].length);
+    if (script[colon] !== ':') continue;
+    const chain = chainAt(skip(colon + 1), 0);
+    if (chain === UNREADABLE) { unverifiable = true; continue; }
+    // Not literals to the end of the expression: a part of a value is not the folder it names.
+    if (!chain || !VALUE_END.has(script[skip(chain.end)])) continue;
+    budget -= chain.links + chain.chars;
+    if (chain.chars > MAX_VALUE_CHARS || budget < 0) { unverifiable = true; continue; }
+    values.add(join(chain));
+  }
+  return { values: [...values], unverifiable };
+}
+
+/**
+ * The policy's view of a working folder: a tool path, judged from the entry's
+ * own folder (the turn's), so a relative, drive-relative or rooted spelling is
+ * placed the way Codex places it. A path, not a folder of the note: the text
+ * is the model's, and `cwds_seen` lists only folders the transcript declared.
+ */
+const workdirUse = (id, workdir) => toolUse(id, 'Workdir', { path: workdir });
+
+// Escapes JSON and JavaScript read alike. Hex, code point and octal escapes
+// and a line continuation are left to JSON.parse, which refuses them: not
+// read. `\8` and `\9` are the digits themselves, as sloppy JavaScript reads them.
+const JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '\n', '\r', '\u2028', '\u2029']);
 
 /** A JS string literal's body as a JSON string body: same escapes, quotes and raw newlines adjusted. */
 function toJsonBody(body) {
@@ -106,19 +266,32 @@ function toJsonBody(body) {
     const char = body[index];
     if (char === '\\' && index + 1 < body.length) {
       const next = body[index + 1];
-      out += next === "'" || next === '`' ? next : `\\${next}`;
+      // `\v` is a vertical tab; any other escape JavaScript does not define is the character itself.
+      if (next === 'v') out += jsonChar(String.fromCharCode(11));
+      else if (JSON_ESCAPES.has(next)) out += `\\${next}`;
+      else out += jsonChar(next);
       index += 1;
-    } else if (char === '"') out += '\\"';
-    else if (char === '\n') out += '\\n';
-    else if (char === '\r') out += '\\r';
-    else out += char;
+    } else out += jsonChar(char);
   }
   return out;
+}
+
+/**
+ * One character as JSON string text. A raw control character (a TAB in a
+ * patch, a LF in a template) is valid in a JavaScript literal but not in JSON,
+ * so it is written as its escape; a quote is escaped.
+ */
+function jsonChar(char) {
+  const code = char.charCodeAt(0);
+  if (code < 0x20) return `${String.fromCharCode(92)}u${code.toString(16).padStart(4, '0')}`;
+  return char === '"' ? `${String.fromCharCode(92)}"` : char;
 }
 
 /** Read only literal tool inputs from a Codex code-mode call. Never evaluate its JS. */
 function nestedUses(script, callId, cwd, joinPath) {
   const uses = [];
+  const read = scriptWorkdirs(script);
+  const workdirs = read.unverifiable ? [...read.values, UNREADABLE_WORKDIR] : read.values;
   for (const match of script.matchAll(/tools\.exec_command\s*\(/g)) {
     const source = script.slice(match.index, match.index + 2000);
     const command = literalField(source, 'cmd');
@@ -129,7 +302,7 @@ function nestedUses(script, callId, cwd, joinPath) {
   for (const match of script.matchAll(/tools\.apply_patch\s*\(\s*/g)) {
     // Only a literal patch can be read; its body never reaches the note.
     const patch = literalArgument(script.slice(match.index + match[0].length));
-    if (patch) uses.push(...patchFileUses(patch, callId, cwd, uses.length, joinPath));
+    if (patch) for (const use of patchFileUses(patch, callId, cwd, uses.length, joinPath)) uses.push(use);
   }
   const rag = [...script.matchAll(/tools\.mcp__rag__(search_context|get_document)\s*\(/g)];
   if (rag.length === 1) {
@@ -140,9 +313,9 @@ function nestedUses(script, callId, cwd, joinPath) {
       if (value) input[key] = value;
     }
     uses.push(toolUse(`${callId}:rag`, `mcp__rag__${rag[0][1]}`, input));
-    return { uses, ragId: `${callId}:rag`, ragTool: rag[0][1] };
+    return { uses, workdirs, ragId: `${callId}:rag`, ragTool: rag[0][1] };
   }
-  return { uses, ragId: '', ragTool: '' };
+  return { uses, workdirs, ragId: '', ragTool: '' };
 }
 
 /**
@@ -198,23 +371,40 @@ export function extractCodexTurns(records, sessionCwd, { env = process.env } = {
       const id = String(payload.call_id ?? `codex-${entries.length}`);
       const args = toolArgs(payload);
       const uses = [toolUse(id, name || payload.type, args)];
+      // A shell call's `workdir` is a folder the session was in, as a turn's is.
+      const workdirs = typeof args.workdir === 'string' && args.workdir ? [args.workdir] : [];
       if (['exec_command', 'shell_command'].includes(name) && typeof args.cmd === 'string') {
         uses.push(toolUse(`${id}:shell`, 'PowerShell', { command: args.cmd,
           description: args.description || '' }));
       }
       if (name === 'apply_patch') {
         const patch = typeof payload.input === 'string' ? payload.input : String(args.patch ?? '');
-        uses.push(...patchFileUses(patch, id, cwd, uses.length, joinPath));
+        for (const use of patchFileUses(patch, id, cwd, uses.length, joinPath)) uses.push(use);
       }
       if (payload.type === 'custom_tool_call' && typeof payload.input === 'string') {
         const nested = nestedUses(payload.input, id, cwd, joinPath);
-        uses.push(...nested.uses);
+        // Loops, not spreads: a script can name hundreds of thousands of calls.
+        for (const use of nested.uses) uses.push(use);
+        for (const workdir of nested.workdirs) workdirs.push(workdir);
         if (nested.ragId) ragCalls.set(id, nested);
       } else if (name.startsWith('mcp__rag__')) {
         ragCalls.set(id, { ragId: id, ragTool: name.slice('mcp__rag__'.length) });
       }
+      let index = 0;
+      for (const workdir of new Set(workdirs)) uses.push(workdirUse(`${id}:workdir:${index++}`, workdir));
       entries.push({ type: 'assistant', timestamp: record.timestamp, cwd,
         message: { content: uses } });
+      continue;
+    }
+    // The older shell item: its command and working folder are in `action`.
+    if (payload?.type === 'local_shell_call') {
+      const id = String(payload.call_id ?? payload.id ?? `codex-${entries.length}`);
+      const action = payload.action && typeof payload.action === 'object' && !Array.isArray(payload.action) ? payload.action : {};
+      const uses = [toolUse(id, 'local_shell', {})];
+      const command = Array.isArray(action.command) ? action.command.filter((part) => typeof part === 'string').join(' ') : '';
+      if (command) uses.push(toolUse(`${id}:shell`, 'PowerShell', { command }));
+      if (typeof action.working_directory === 'string' && action.working_directory) uses.push(workdirUse(`${id}:workdir:0`, action.working_directory));
+      entries.push({ type: 'assistant', timestamp: record.timestamp, cwd, message: { content: uses } });
       continue;
     }
     if (payload?.type === 'function_call_output' || payload?.type === 'custom_tool_call_output') {

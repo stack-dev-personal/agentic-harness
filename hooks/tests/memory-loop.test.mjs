@@ -60,21 +60,25 @@ test('a stop during the wait ends the loop without another run', async () => {
   assert.deepEqual(h.runs, [0]);
 });
 
-test('a run that outlives its time limit is sent SIGTERM, and the loop gets its exit code', async () => {
+test('a run that outlives its time limit gets SIGTERM, then SIGKILL, and the loop gets its exit code', async () => {
   const { EventEmitter } = await import('node:events');
   const child = Object.assign(new EventEmitter(), { pid: 4242 });
   const signals = [];
-  let fire;
+  const timers = [];
   const runOnce = workerRunner({
-    env: {}, workerPath: '/app/hooks/memory-worker.mjs', timeoutMs: 1000,
+    env: {}, workerPath: '/app/hooks/memory-worker.mjs', timeoutMs: 1000, killAfterMs: 500,
     spawn: (command, args) => { assert.deepEqual(args, ['/app/hooks/memory-worker.mjs']); return child; },
-    signal: (running, signal) => { signals.push([running.pid, signal]); running.emit('exit', null, signal); },
-    setTimer: (callback) => { fire = callback; return 1; }, clearTimer: () => {},
+    // A worker stuck in synchronous work ignores SIGTERM; SIGKILL ends it.
+    signal: (running, signal) => { signals.push([running.pid, signal]); if (signal === 'SIGKILL') running.emit('exit', null, signal); },
+    setTimer: (callback, ms) => { timers.push({ callback, ms }); return timers.length; }, clearTimer: () => {},
   });
   const pending = runOnce();
-  fire();
-  assert.equal(await pending, 128 + os.constants.signals.SIGTERM);
+  timers[0].callback();
   assert.deepEqual(signals, [[4242, 'SIGTERM']]);
+  assert.equal(timers[1].ms, 500);
+  timers[1].callback();
+  assert.equal(await pending, 128 + os.constants.signals.SIGKILL);
+  assert.deepEqual(signals, [[4242, 'SIGTERM'], [4242, 'SIGKILL']]);
 });
 
 test('queueChangedSince: only a non-empty queue written after the last run counts', () => {

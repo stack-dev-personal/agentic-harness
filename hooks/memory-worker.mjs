@@ -122,7 +122,34 @@ function prepare({ home, env, log }) {
  */
 export const workerSide = (env) => (env?.HARNESS_JOBS_CONTAINER === '1' ? 'container' : 'host');
 
-const lockWorker = (stateDir) => acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+// The lock this process holds, for the stop handler.
+let heldLock = null;
+
+function lockWorker(stateDir) {
+  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+  if (lock.ok) heldLock = lock;
+  return lock;
+}
+
+function unlockWorker(lock) {
+  if (heldLock === lock) heldLock = null;
+  return releaseRealmLock(lock);
+}
+
+/**
+ * A stop (`docker stop`, the loop's time limit) must not leave the lock behind:
+ * it is judged stale only after 90 minutes, and until then neither the host
+ * nor the container captures anything. A run is synchronous, so the handler
+ * runs when the run yields; it releases a lock still held and exits 143.
+ */
+export function installStopHandler() {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      if (heldLock) unlockWorker(heldLock);
+      process.exit(128 + os.constants.signals[signal]);
+    });
+  }
+}
 
 /**
  * `--baseline codex`: record each Codex rollout that its note already covers as
@@ -143,7 +170,7 @@ export async function runCodexBaseline({ home = os.homedir(), env = process.env,
     if (!dryRun) saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints, env: loaded });
     log(`baseline codex${dryRun ? ' (dry run)' : ''}: ${JSON.stringify(counts)}`);
     return { ...counts, saved: !dryRun, failed: counts.unreadable };
-  } finally { releaseRealmLock(lock); }
+  } finally { unlockWorker(lock); }
 }
 
 /** All hooks use the same queue. Legacy queue names are drained during migration. */
@@ -178,13 +205,14 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
       runtimes: counts, capabilities, eligible: result.eligible, written: result.written, excluded: result.excluded, unsupported: result.unsupported,
       errors: result.errors, deferred: result.deferred, failed: health.failed, ingested: health.ingested }));
     return health;
-  } finally { releaseRealmLock(lock); }
+  } finally { unlockWorker(lock); }
 }
 
 if (isEntryPoint(import.meta.url)) {
   // Host and container share this log through ~/.harness: the container says so on each line.
   const fileLog = createLogger(path.join(harnessDir(), 'memory-worker.log'));
   const log = workerSide(process.env) === 'container' ? (line) => fileLog(`container: ${line}`) : fileLog;
+  installStopHandler();
   try {
     const healthOnly = process.argv.includes('--health');
     const baseline = process.argv.indexOf('--baseline');

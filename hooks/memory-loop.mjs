@@ -29,6 +29,7 @@ export const RUN_INTERVAL_MS = 5 * 60_000;
 export const QUEUE_POLL_MS = 30_000;
 /** Longer than the worker's own 15-minute capture budget plus an ingest. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
+export const KILL_AFTER_MS = 60_000;
 const QUEUE_FILES = ['memory-ingest-queue.jsonl', 'codex-ingest-queue.jsonl'];
 const SIGNAL_EXIT_BASE = 128;
 const EXIT_CONFIG = 78;
@@ -47,17 +48,27 @@ export function queueChangedSince(stateDir, sinceMs) {
   });
 }
 
-/** One worker run as a child process; resolves with its exit code. */
-export function workerRunner({ env, workerPath, timeoutMs = RUN_TIMEOUT_MS, onChild = () => {},
+/**
+ * One worker run as a child process; resolves with its exit code. Past its time
+ * limit the run gets SIGTERM, which the worker takes when its synchronous work
+ * yields (it then releases its lock); a run that never yields gets SIGKILL a
+ * minute later, and its lock goes stale on its own.
+ */
+export function workerRunner({ env, workerPath, timeoutMs = RUN_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS, onChild = () => {},
   spawn: spawnImpl = spawn, signal = signalJob, setTimer = setTimeout, clearTimer = clearTimeout }) {
   return () => {
     let running = null;
-    const timer = setTimer(() => { if (running) signal(running, 'SIGTERM'); }, timeoutMs);
+    const timers = [];
+    timers.push(setTimer(() => {
+      if (!running) return;
+      signal(running, 'SIGTERM');
+      timers.push(setTimer(() => { if (running) signal(running, 'SIGKILL'); }, killAfterMs));
+    }, timeoutMs));
     return spawnJob({ command: process.execPath, args: [workerPath] }, {
       env,
       spawn: spawnImpl,
       onChild: (child) => { running = child; onChild(child); },
-    }).finally(() => clearTimer(timer));
+    }).finally(() => timers.forEach(clearTimer));
   };
 }
 

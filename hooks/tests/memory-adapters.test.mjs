@@ -132,6 +132,20 @@ test('a rollout delegate with no spawn record is written with the placeholder, a
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a rollout delegate is looked at again when its parent changes, since its task comes from the parent', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-child-'));
+  try {
+    const vaultRoot = delegatedRollouts(root, { message: ENCRYPTED_TASK, childActivity: false });
+    const fingerprint = () => discoverCodexSessions({ home: root, vaultRoot, env: { USERPROFILE: root } }).find(c => c.sessionId === 'codex-child').fingerprint;
+    const before = fingerprint();
+    assert.equal(fingerprint(), before, 'stable while nothing changes');
+    fs.appendFileSync(path.join(root, '.codex', 'sessions', 'rollout-parent.jsonl'),
+      `${JSON.stringify({ type: 'response_item', timestamp: '2026-11-03T12:02:00Z', payload: { type: 'function_call', name: 'spawn_agent',
+        arguments: JSON.stringify({ task_name: 'verify_queue', message: 'Verify the shared queue.' }) } })}\n`);
+    assert.notEqual(fingerprint(), before);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a rollout delegate with no parent is unsupported, as from SQLite, and nothing is written', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-child-'));
   try {

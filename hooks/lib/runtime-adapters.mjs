@@ -110,7 +110,10 @@ export function discoverCodexSessions({ home = os.homedir(), vaultRoot, env = pr
       parent = metadata?.parent_thread_id || metadata?.source?.subagent?.thread_spawn?.parent_thread_id;
     }
     const input = { sessionId: id, parentSession: parentId || '', ancestorSessions, transcriptPath: record.file, cwd: record.head.payload.cwd || '', hookEventName: 'SessionEnd', endReason: 'resume' };
-    return wrapped({ runtime: 'codex', sessionId: `codex-${id}`, fingerprint: `${record.stat.mtimeMs}:${record.stat.size}`, input,
+    // A delegate's task is read from its parent's rollout, so the parent's revision is part of the delegate's.
+    const parentStat = isSubagentHead(record.head) ? all.get(parentId)?.stat : null;
+    const fingerprint = `${record.stat.mtimeMs}:${record.stat.size}${parentStat ? `|${parentStat.mtimeMs}:${parentStat.size}` : ''}`;
+    return wrapped({ runtime: 'codex', sessionId: `codex-${id}`, fingerprint, input,
       lockSessions: [id, ...ancestorSessions].map((each) => ({ sessionId: `codex-${each}`, briefSessionId: each })),
       place: () => fileSession({ sessionId: `codex-${id}`, briefSessionId: id, cwd: input.cwd, vaultRoot, env, stateDir: defaultStateDir(env),
         ancestors: ancestorSessions.map((each) => ({ sessionId: `codex-${each}`, briefSessionId: each })) }),

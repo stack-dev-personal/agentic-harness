@@ -24,6 +24,11 @@ export const UNSUPPORTED_GENERATION = 2;
  * `{vaultRoot, checkpoints}` with absolute paths; it is read as one vault.
  */
 const STATE_FILE = 'memory-checkpoints.json';
+/**
+ * Bumped whenever what counts as a prompt or a delegate's activity changes, so a
+ * session remembered as having nothing to write is looked at again once.
+ */
+export const TRIVIAL_GENERATION = 1;
 /** Skips that are no failure: the session has nothing a note would hold. */
 const TRIVIAL_SKIP = /no (?:human|user) prompts|subagent did nothing/;
 const STATE_VERSION = 2;
@@ -87,7 +92,7 @@ export function checkpointSessions({ candidates, vaultRoot, stateDir = harnessDi
       if (previous.unsupported && previous.generation === UNSUPPORTED_GENERATION) { result.unsupported += 1; continue; }
       // A session with nothing to write (no prompts, a delegate that did
       // nothing) gives the same answer until it changes.
-      if (previous.trivial) continue;
+      if (previous.trivial && previous.generation === TRIVIAL_GENERATION) continue;
       if (previous.paths?.length && previous.paths.every(file => fs.existsSync(file))) continue;
     }
     result.eligible += 1;
@@ -103,7 +108,7 @@ export function checkpointSessions({ candidates, vaultRoot, stateDir = harnessDi
       }
       if (outcome.action === 'deferred') { result.deferred += 1; continue; }
       if (!(outcome.written || outcome.action === 'noop')) {
-        if (TRIVIAL_SKIP.test(outcome.skip || '')) result.checkpoints[key] = { fingerprint: candidate.fingerprint, paths: [], trivial: true };
+        if (TRIVIAL_SKIP.test(outcome.skip || '')) result.checkpoints[key] = { fingerprint: candidate.fingerprint, paths: [], trivial: true, generation: TRIVIAL_GENERATION };
         else result.errors += 1;
         continue;
       }

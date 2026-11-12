@@ -106,6 +106,7 @@ test('a code-mode search whose result a script wrapped in a settled promise is s
   for (const [label, wrapped] of [
     ['allSettled item', { i: 0, ...settled }],
     ['nested result', { i: 0, result: settled }],
+    ['the settled array printed whole', [{ status: 'rejected', reason: 'x' }, settled]],
   ]) {
     const records = [
       message('user', 'Find ledger invariants.', at(1)),

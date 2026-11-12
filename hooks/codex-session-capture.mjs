@@ -9,7 +9,7 @@ import { analyseTranscript } from './lib/analyse.mjs';
 import { isSubagentHead, readCodexHead, resolveCodexTranscript } from './lib/codex-head.mjs';
 import { captureSession } from './lib/capture.mjs';
 import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
-import { humanPrompt } from './lib/codex-prompt.mjs';
+import { humanPrompt, humanText } from './lib/codex-prompt.mjs';
 import { isEncryptedTask, placeholderTask } from './lib/codex-task.mjs';
 import { hostPathFlavor, joinHostPath } from './lib/host-paths.mjs';
 import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
@@ -325,7 +325,9 @@ function nestedUses(script, callId, cwd, joinPath) {
  * output is data, not a structure to walk without limit.
  */
 function resultTexts(node, depth = 0) {
-  if (depth > 3 || !node || typeof node !== 'object' || Array.isArray(node) || node.isError === true) return [];
+  if (depth > 3 || !node || typeof node !== 'object' || node.isError === true) return [];
+  // `Promise.allSettled` printed whole is an array of settled results.
+  if (Array.isArray(node)) return node.slice(0, 64).flatMap((item) => resultTexts(item, depth + 1));
   const texts = Array.isArray(node.content)
     ? node.content.map((block) => block?.text).filter((value) => typeof value === 'string') : [];
   return [...texts, ...resultTexts(node.value, depth + 1), ...resultTexts(node.result, depth + 1)];
@@ -419,7 +421,7 @@ export function extractCodexTurns(records, sessionCwd, { env = process.env } = {
     }
     if (payload?.type !== 'message') continue;
     if (payload.role === 'user') {
-      const text = humanPrompt(textBlocks(payload.content, 'input_text'));
+      const text = humanText(payload.content, 'input_text');
       if (text) entries.push({ type: 'user', origin: { kind: 'human' }, timestamp: record.timestamp, cwd, message: { content: text } });
     } else if (payload.role === 'assistant' && ['final_answer', 'final'].includes(payload.phase)) {
       const text = textBlocks(payload.content, 'output_text');
@@ -442,7 +444,7 @@ function firstPromptFromHead(file, fallback) {
         const record = JSON.parse(line);
         const item = record?.payload;
         if (record?.type !== 'response_item' || item?.type !== 'message' || item.role !== 'user') continue;
-        const prompt = humanPrompt(textBlocks(item.content, 'input_text'));
+        const prompt = humanText(item.content, 'input_text');
         if (prompt) return prompt;
       } catch { /* malformed line */ }
     }

@@ -132,7 +132,9 @@ services:
     restart: unless-stopped
     command: ["node", "hooks/memory-loop.mjs"]
     # The loop passes SIGTERM to the running worker, which finishes its
-    # synchronous step, releases memory-worker.lock and exits.
+    # synchronous step, releases memory-worker.lock and exits. A run that has
+    # not yielded after 90 s is killed by the loop, which then releases the
+    # lock itself; this grace leaves time for that.
     stop_grace_period: 150s
     environment:
       DATABASE_URL_FILE: /run/secrets/harness_database_url
@@ -162,12 +164,15 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Codex makes this folder only when it first archives a thread, so it may
+      # be created here (empty). The sessions mount above still refuses an
+      # unset CODEX_DIR.
       - type: bind
         source: ${CODEX_DIR:-./.memory-unset/codex}/archived_sessions
         target: /home/harness/.codex/archived_sessions
         read_only: true
         bind:
-          create_host_path: false
+          create_host_path: true
       - type: bind
         source: ${HARNESS_STATE_DIR_HOST:-./.memory-unset/harness}
         target: /home/harness/.harness

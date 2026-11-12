@@ -208,19 +208,40 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
   } finally { unlockWorker(lock); }
 }
 
+const HEALTH_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * What `--health` reports for a health file (null when there is none yet):
+ * one more failure when it is older than 15 minutes, and in the container one
+ * more when the container did not write it. The file is shared with the host,
+ * whose runs keep it fresh while a container that is always `busy` (a host
+ * task still running) captures nothing.
+ */
+export function judgeHealth(health, { env = process.env, now = Date.now() } = {}) {
+  if (!health || typeof health !== 'object') return { failed: 1, reason: 'no health file yet' };
+  const result = { ...health };
+  if (!(now - Date.parse(result.checkedAt) <= HEALTH_MAX_AGE_MS)) result.failed = (result.failed || 0) + 1;
+  if (workerSide(env) === 'container' && !String(result.writer ?? '').endsWith('(container)')) result.failed = (result.failed || 0) + 1;
+  return result;
+}
+
+function readHealth() {
+  try { return JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8')); } catch { return null; }
+}
+
 if (isEntryPoint(import.meta.url)) {
   // Host and container share this log through ~/.harness: the container says so on each line.
   const fileLog = createLogger(path.join(harnessDir(), 'memory-worker.log'));
   const log = workerSide(process.env) === 'container' ? (line) => fileLog(`container: ${line}`) : fileLog;
   installStopHandler();
   try {
+    // A health check reads and reports; it never writes to the log both sides share.
     const healthOnly = process.argv.includes('--health');
     const baseline = process.argv.indexOf('--baseline');
     if (baseline !== -1 && process.argv[baseline + 1] !== 'codex') throw new Error('usage: memory-worker.mjs --baseline codex [--dry-run]');
-    const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8'))
+    const result = healthOnly ? judgeHealth(readHealth())
       : baseline !== -1 ? await runCodexBaseline({ log, dryRun: process.argv.includes('--dry-run') })
         : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
-    if (healthOnly && Date.now() - Date.parse(result.checkedAt) > 15 * 60_000) result.failed = (result.failed || 0) + 1;
     if (healthOnly || baseline !== -1 || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');
     if (result.failed) process.exitCode = 1;
   } catch (error) {

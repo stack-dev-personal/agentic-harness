@@ -100,6 +100,44 @@ test('Codex code-mode activity becomes the shared commands, files, and retrieval
   assert.ok(!JSON.stringify(parsed.entries).includes('raw-secret-from-tool'));
 });
 
+test('a code-mode search whose result a script wrapped in a settled promise is still a retrieval', () => {
+  const fixture = fs.readFileSync(new URL('./fixtures/rag-results/search-one.txt', import.meta.url), 'utf8');
+  const settled = { status: 'fulfilled', value: { content: [{ type: 'text', text: fixture }] } };
+  for (const [label, wrapped] of [
+    ['allSettled item', { i: 0, ...settled }],
+    ['nested result', { i: 0, result: settled }],
+  ]) {
+    const records = [
+      message('user', 'Find ledger invariants.', at(1)),
+      { timestamp: at(2), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1',
+        input: 'const out=await Promise.allSettled([tools.exec_command({cmd:"git status"}), tools.mcp__rag__search_context({query:"ledger invariants"})]); text(out);' } },
+      { timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: [
+        { type: 'input_text', text: JSON.stringify({ i: 1, status: 'fulfilled', value: { chunk_id: 'x', output: 'raw-secret-from-tool', wall_time_seconds: 1 } }) },
+        { type: 'input_text', text: JSON.stringify(wrapped) },
+      ] } },
+      message('assistant', 'The ledger is consistent.', at(4), 'final_answer'),
+    ];
+    const searches = extractRetrievals(extractCodexTurns(records, 'C:/work/demo').entries);
+    assert.equal(searches.records.length, 1, label);
+    assert.equal(searches.records[0].query, 'ledger invariants', label);
+    assert.equal(searches.hits.length, 1, label);
+  }
+});
+
+test('a failed code-mode search is no retrieval, whatever text it carries', () => {
+  const fixture = fs.readFileSync(new URL('./fixtures/rag-results/search-one.txt', import.meta.url), 'utf8');
+  const records = [
+    message('user', 'Find ledger invariants.', at(1)),
+    { timestamp: at(2), type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1',
+      input: 'const r=await Promise.allSettled([tools.mcp__rag__search_context({query:"ledger invariants"})]); text(r);' } },
+    { timestamp: at(3), type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: [
+      { type: 'input_text', text: JSON.stringify({ i: 0, status: 'fulfilled', value: { isError: true, content: [{ type: 'text', text: fixture }] } }) },
+    ] } },
+  ];
+  const searches = extractRetrievals(extractCodexTurns(records, 'C:/work/demo').entries);
+  assert.equal(searches.hits.length, 0);
+});
+
 test('Codex capture writes a redacted vault note, replays safely, and chains a resumed chat', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-capture-'));
   try {

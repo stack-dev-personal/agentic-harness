@@ -145,15 +145,25 @@ function nestedUses(script, callId, cwd, joinPath) {
   return { uses, ragId: '', ragTool: '' };
 }
 
+/**
+ * The texts a tool result carries: its `content` blocks, also when a script
+ * wrapped the call in `Promise.allSettled` (`{status, value}`), possibly under
+ * `result`. A result marked `isError` carries none. Bounded: a script's own
+ * output is data, not a structure to walk without limit.
+ */
+function resultTexts(node, depth = 0) {
+  if (depth > 3 || !node || typeof node !== 'object' || Array.isArray(node) || node.isError === true) return [];
+  const texts = Array.isArray(node.content)
+    ? node.content.map((block) => block?.text).filter((value) => typeof value === 'string') : [];
+  return [...texts, ...resultTexts(node.value, depth + 1), ...resultTexts(node.result, depth + 1)];
+}
+
 function ragResultText(output, tool) {
   const raw = Array.isArray(output) ? output.map((block) => block?.text).filter((value) => typeof value === 'string')
     : typeof output === 'string' ? [output] : [];
   const candidates = [...raw];
   for (const item of raw) {
-    try {
-      const parsed = JSON.parse(item);
-      for (const block of parsed?.content ?? []) if (typeof block?.text === 'string') candidates.push(block.text);
-    } catch { /* wrapper is plain text */ }
+    try { candidates.push(...resultTexts(JSON.parse(item))); } catch { /* wrapper is plain text */ }
   }
   return candidates.find((value) => parseRagResult(tool, value)) ?? '';
 }

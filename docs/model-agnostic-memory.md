@@ -208,6 +208,23 @@ Under a flavor two more settings are required, each a plain drive path:
 The worker also skips Hermes and never opens the Codex database under a flavor;
 Codex rollout files cover those sessions.
 
+A rollout gives the same note as the database for prompts, delegated task line
+(an encrypted spawn prompt becomes the placeholder on both), provider and
+retrievals, including a search a code-mode script wrapped in
+`Promise.allSettled`. What the rollout cannot give, because the adapter reads
+code-mode scripts as text and never runs them:
+
+- a path, command or search argument held in a variable rather than written as a
+  literal (on 2026-11-11, 12 of 149 rollouts had such a call; 4 of them built
+  `apply_patch` text at run time, 23 files in 5 notes that the database names);
+- more than one search in one script, which is recorded as none;
+- a search whose result the script reduced before printing it (the database
+  keeps the raw result; the rollout only what the script printed). On
+  2026-11-11 that left 23 retrieval records in 10 notes that only the database has.
+
+The database records these as structured items, so the host sees them and the
+path policy judges them. From a rollout, the policy sees only the literal ones.
+
 State the host and the container share through one `~/.harness`:
 
 - **Ingest queue** lines are `{"note": "<area>/<collection>/sessions/<id>.md"}`,

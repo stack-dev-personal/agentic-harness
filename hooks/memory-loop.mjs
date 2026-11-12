@@ -32,6 +32,8 @@ export const RUN_TIMEOUT_MS = 30 * 60_000;
 export const KILL_AFTER_MS = 60_000;
 /** After a stop: well inside compose's stop_grace_period (150 s) for harness-memory. */
 export const STOP_KILL_AFTER_MS = 90_000;
+/** The owner a container worker writes into memory-worker.lock (memory-worker.mjs). */
+const CONTAINER_LOCK_OWNER = 'memory worker (container)';
 const QUEUE_FILES = ['memory-ingest-queue.jsonl', 'codex-ingest-queue.jsonl'];
 const SIGNAL_EXIT_BASE = 128;
 const EXIT_CONFIG = 78;
@@ -94,6 +96,8 @@ export function releaseKilledWorkerLock(stateDir, pid, startedAtMs) {
   const lockPath = path.join(stateDir, 'memory-worker.lock');
   let holder;
   try { holder = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch { return false; }
+  // The container's own lock only: a host pid can equal a container one.
+  if (holder?.owner !== CONTAINER_LOCK_OWNER) return false;
   if (!pid || holder?.pid !== pid || !(Date.parse(holder.startedAt) >= startedAtMs - 1000)) return false;
   try { fs.rmSync(lockPath); return true; } catch { return false; }
 }

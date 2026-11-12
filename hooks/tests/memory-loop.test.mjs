@@ -104,7 +104,7 @@ function killedRun({ lock, exitSignal = 'SIGKILL', exitCode = null }) {
     const lockPath = path.join(dir, 'memory-worker.lock');
     const child = Object.assign(new EventEmitter(), { pid: 4242 });
     const runOnce = workerRunner({ env: {}, workerPath: '/w.mjs', stateDir: dir, spawn: () => {
-      if (lock) fs.writeFileSync(lockPath, `${JSON.stringify({ pid: 4242, owner: 'memory worker', startedAt: new Date().toISOString(), token: 't', ...lock })}\n`);
+      if (lock) fs.writeFileSync(lockPath, `${JSON.stringify({ pid: 4242, owner: 'memory worker (container)', startedAt: new Date().toISOString(), token: 't', ...lock })}\n`);
       setImmediate(() => child.emit('exit', exitCode, exitSignal));
       return child;
     } });
@@ -117,7 +117,8 @@ test('the lock of a worker killed mid-run is released by the loop', async () => 
 });
 
 test('a lock the killed worker did not take is left alone', async () => {
-  assert.equal(await killedRun({ lock: { pid: 777 } })(), true, 'another process (the host) holds it');
+  assert.equal(await killedRun({ lock: { pid: 777 } })(), true, 'another process holds it');
+  assert.equal(await killedRun({ lock: { owner: 'memory worker (host)' } })(), true, 'the host holds it, whatever its pid');
   assert.equal(await killedRun({ lock: { startedAt: '2026-01-01T00:00:00Z' } })(), true, 'taken before this run: a reused pid');
   assert.equal(await killedRun({ lock: {}, exitSignal: null, exitCode: 0 })(), true, 'a worker that exited normally released its own');
 });

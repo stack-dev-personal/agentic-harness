@@ -125,8 +125,9 @@ export const workerSide = (env) => (env?.HARNESS_JOBS_CONTAINER === '1' ? 'conta
 // The lock this process holds, for the stop handler.
 let heldLock = null;
 
-function lockWorker(stateDir) {
-  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+// The owner names the side, so the container's loop can tell its own lock from the host's.
+function lockWorker(stateDir, env) {
+  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: `memory worker (${workerSide(env)})`, staleMs: 90 * 60_000 });
   if (lock.ok) heldLock = lock;
   return lock;
 }
@@ -161,7 +162,7 @@ export async function runCodexBaseline({ home = os.homedir(), env = process.env,
   const ready = prepare({ home, env, log });
   if (ready.stop) return ready.stop;
   const { loaded, stateDir, vaultRoot } = ready;
-  const lock = lockWorker(stateDir);
+  const lock = lockWorker(stateDir, loaded);
   if (!lock.ok) return { busy: true, failed: 0 };
   try {
     const since = activationTime(stateDir, Date.now(), true);
@@ -179,7 +180,7 @@ export async function runMemoryWorker({ home = os.homedir(), env = process.env, 
   const ready = prepare({ home, env, log });
   if (ready.stop) return ready.stop;
   const { loaded, stateDir, vaultRoot } = ready;
-  const lock = lockWorker(stateDir);
+  const lock = lockWorker(stateDir, loaded);
   if (!lock.ok) return { busy: true, failed: 0 };
   try {
     const before = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log });

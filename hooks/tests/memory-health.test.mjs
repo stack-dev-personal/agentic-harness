@@ -38,3 +38,18 @@ test('workerSide reads only the exact container flag', () => {
   assert.equal(workerSide({ HARNESS_JOBS_CONTAINER: '0' }), 'host');
   assert.equal(workerSide({}), 'host');
 });
+
+test('the worker lock names the side that holds it', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-lock-side-'));
+  try {
+    fs.mkdirSync(path.join(home, 'vault'));
+    const env = { USERPROFILE: home, HARNESS_VAULT: path.join(home, 'vault'), HARNESS_MACHINE_ENV: path.join(home, 'absent.env'), HARNESS_JOBS_CONTAINER: '1' };
+    let owner = '';
+    await runMemoryWorker({ home, env, drain: () => ({ failed: [], ingested: 0 }), queue: () => ({ queued: true }),
+      candidates: [{ runtime: 'codex', sessionId: 'codex-x', fingerprint: 'f', capture: () => {
+        owner = JSON.parse(fs.readFileSync(path.join(home, '.harness', 'memory-worker.lock'), 'utf8')).owner;
+        return { written: false, action: 'skip', skip: 'no user prompts' };
+      } }] });
+    assert.equal(owner, 'memory worker (container)');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});

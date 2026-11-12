@@ -85,6 +85,118 @@ services:
         max-size: 10m
         max-file: "3"
 
+  # harness-memory: the memory worker (hooks/memory-worker.mjs) every five
+  # minutes and on new queue entries (hooks/memory-loop.mjs), reading the
+  # host's Claude Code transcripts and Codex rollout files. It replaces the
+  # host's scheduled task AgenticHarness-Memory on the machine that runs it
+  # (docs/model-agnostic-memory.md, "Filing and shared state between the host
+  # and the container").
+  #
+  # Behind the profile `memory`: nothing starts it but its name, so a bare
+  # `up` cannot start a second worker beside the host's. Start it only at
+  # cutover, after the host task is disabled and `memory-worker.mjs
+  # --baseline codex` has run:
+  #
+  #   docker compose --profile memory up -d harness-memory
+  #
+  # Same image as harness-jobs (built by that service; this one has no build).
+  # Least privilege, against harness-jobs: the database secret, not the realm
+  # token; transcripts read-only; no checkouts, no Codex database or login,
+  # no Hermes, and never a protected folder.
+  #
+  # The umbrella's variables, each a host path (drive paths on Windows):
+  #
+  #   CLAUDE_PROJECTS_DIR   the host's ~/.claude/projects            (read-only)
+  #   CODEX_DIR             the host's ~/.codex; only sessions/ and archived_sessions/ are mounted (read-only)
+  #   HARNESS_STATE_DIR_HOST the host's ~/.harness                    (read-write; machine.env read-only)
+  #   HARNESS_HOST_HOME     the host's home as it spells it, C:/Users/<name>
+  #   HARNESS_HOST_VAULT    the host's vault as it spells it, C:/Users/<name>/vault
+  #   HARNESS_HOST_PATH_FLAVOR  win32 for a Windows host (default)
+  #   VAULT_DIR             the vault, as for harness-jobs
+  #
+  # An unset path falls back to a folder that does not exist, so the service
+  # refuses to start rather than run on an empty mount.
+  #
+  # The host's ~/.harness is mounted where this user's own would be, so the
+  # worker reads the host's machine.env, exclusions, session-start records,
+  # checkpoints, queue, lock, log and health file. machine.env names host
+  # paths (HARNESS_VAULT and others); the image's environment wins over it,
+  # which is why HARNESS_VAULT, HARNESS_INGEST_PROJECT and FASTEMBED_CACHE_DIR
+  # are set again below. machine.env itself is mounted read-only on top of the
+  # writable folder: the container can never change the protected roots the
+  # host's hooks read.
+  harness-memory:
+    profiles: [memory]
+    image: ${HARNESS_MEMORY_IMAGE:-harness-jobs:local}
+    pull_policy: never
+    restart: unless-stopped
+    command: ["node", "hooks/memory-loop.mjs"]
+    # The loop passes SIGTERM to the running worker, which finishes its
+    # synchronous step, releases memory-worker.lock and exits.
+    stop_grace_period: 150s
+    environment:
+      DATABASE_URL_FILE: /run/secrets/harness_database_url
+      DATABASE_SSL: ${HARNESS_DATABASE_SSL:-}
+      HARNESS_HOST_PATH_FLAVOR: ${HARNESS_HOST_PATH_FLAVOR:-win32}
+      HARNESS_HOST_HOME: ${HARNESS_HOST_HOME:-}
+      HARNESS_HOST_VAULT: ${HARNESS_HOST_VAULT:-}
+      HARNESS_VAULT: /vault
+      HARNESS_INGEST_PROJECT: /app/ingest
+      FASTEMBED_CACHE_DIR: /cache/fastembed
+      # The host hooks' switch for starting the host task; inert here, set so
+      # it reads the same on both sides.
+      HARNESS_MEMORY_START_WORKER: "0"
+    secrets:
+      - harness_database_url
+    volumes:
+      - fastembed-cache:/cache/fastembed
+      - type: bind
+        source: ${CLAUDE_PROJECTS_DIR:-./.memory-unset/claude-projects}
+        target: /home/harness/.claude/projects
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CODEX_DIR:-./.memory-unset/codex}/sessions
+        target: /home/harness/.codex/sessions
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CODEX_DIR:-./.memory-unset/codex}/archived_sessions
+        target: /home/harness/.codex/archived_sessions
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HARNESS_STATE_DIR_HOST:-./.memory-unset/harness}
+        target: /home/harness/.harness
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HARNESS_STATE_DIR_HOST:-./.memory-unset/harness}/machine.env
+        target: /home/harness/.harness/machine.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VAULT_DIR:?set VAULT_DIR to the folder holding the realm checkouts}
+        target: /vault
+    # Healthy means a worker run finished within 15 minutes (`--health`). The
+    # file is shared with the host; its `writer` says which side wrote it.
+    healthcheck:
+      test: ["CMD", "node", "/app/hooks/memory-worker.mjs", "--health"]
+      interval: 2m
+      timeout: 30s
+      retries: 3
+      start_period: 15m
+      start_interval: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
 volumes:
   fastembed-cache:
   job-state:

@@ -100,3 +100,26 @@ test('an unsupported verdict from an older generation is looked at again once', 
     s.cleanup();
   }
 });
+
+test('a trivial session is remembered at its revision and not reopened until it changes', () => {
+  const s = sandbox();
+  try {
+    let opened = 0;
+    const candidate = (fingerprint, skip) => ({ runtime: 'codex', sessionId: `codex-${skip.length}`, fingerprint,
+      capture: () => { opened += 1; return outcome('skip', skip); } });
+    for (const skip of ['subagent did nothing; assignment not recorded', 'no user prompts (trivial session)']) {
+      opened = 0;
+      const first = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('a', skip)] });
+      assert.equal(first.errors, 0);
+      assert.deepEqual(first.checkpoints[`codex:codex-${skip.length}`], { fingerprint: 'a', paths: [], trivial: true });
+      saveMemoryCheckpoints({ stateDir: s.stateDir, vaultRoot: s.vaultRoot, checkpoints: first.checkpoints });
+      const again = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('a', skip)] });
+      assert.equal(again.eligible, 0, `${skip}: not reopened at the same revision`);
+      const changed = checkpointSessions({ vaultRoot: s.vaultRoot, stateDir: s.stateDir, candidates: [candidate('b', skip)] });
+      assert.equal(changed.eligible, 1, `${skip}: a new revision is looked at again`);
+      assert.equal(opened, 2);
+    }
+  } finally {
+    s.cleanup();
+  }
+});

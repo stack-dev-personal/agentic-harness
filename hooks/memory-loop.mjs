@@ -30,22 +30,28 @@ export const QUEUE_POLL_MS = 30_000;
 /** Longer than the worker's own 15-minute capture budget plus an ingest. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
 export const KILL_AFTER_MS = 60_000;
+/** After a stop: well inside compose's stop_grace_period (150 s) for harness-memory. */
+export const STOP_KILL_AFTER_MS = 90_000;
 const QUEUE_FILES = ['memory-ingest-queue.jsonl', 'codex-ingest-queue.jsonl'];
 const SIGNAL_EXIT_BASE = 128;
 const EXIT_CONFIG = 78;
 
 /**
- * True when a queue holds entries written after `sinceMs`. Entries a failed
- * drain kept are older than the run that kept them, so they wait for the next
- * interval instead of starting a run every poll.
+ * The newest modification time of a non-empty queue file, or 0. Compared only
+ * with an earlier reading of itself, never with this process's clock: the
+ * host's hooks write the queue, and the host's clock and the container's can
+ * differ (WSL2 after sleep). A drain renames the queue away and keeps what
+ * failed in the renamed copy, so a failed drain does not start a run every poll.
  */
-export function queueChangedSince(stateDir, sinceMs) {
-  return QUEUE_FILES.some((name) => {
+export function queueStamp(stateDir) {
+  let newest = 0;
+  for (const name of QUEUE_FILES) {
     try {
       const stat = fs.statSync(path.join(stateDir, name));
-      return stat.size > 0 && stat.mtimeMs > sinceMs;
-    } catch { return false; }
-  });
+      if (stat.size > 0) newest = Math.max(newest, stat.mtimeMs);
+    } catch { /* no queue */ }
+  }
+  return newest;
 }
 
 /**
@@ -54,38 +60,62 @@ export function queueChangedSince(stateDir, sinceMs) {
  * yields (it then releases its lock); a run that never yields gets SIGKILL a
  * minute later, and its lock goes stale on its own.
  */
-export function workerRunner({ env, workerPath, timeoutMs = RUN_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS, onChild = () => {},
+export function workerRunner({ env, workerPath, stateDir = '', timeoutMs = RUN_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS, onChild = () => {},
   spawn: spawnImpl = spawn, signal = signalJob, setTimer = setTimeout, clearTimer = clearTimeout }) {
-  return () => {
+  return async () => {
     let running = null;
+    let pid = 0;
+    const startedAt = Date.now();
     const timers = [];
     timers.push(setTimer(() => {
       if (!running) return;
       signal(running, 'SIGTERM');
       timers.push(setTimer(() => { if (running) signal(running, 'SIGKILL'); }, killAfterMs));
     }, timeoutMs));
-    return spawnJob({ command: process.execPath, args: [workerPath] }, {
-      env,
-      spawn: spawnImpl,
-      onChild: (child) => { running = child; onChild(child); },
-    }).finally(() => timers.forEach(clearTimer));
+    try {
+      const code = await spawnJob({ command: process.execPath, args: [workerPath] }, {
+        env,
+        spawn: spawnImpl,
+        onChild: (child) => { running = child; if (child) pid = child.pid; onChild(child); },
+      });
+      if (code >= SIGNAL_EXIT_BASE && stateDir) releaseKilledWorkerLock(stateDir, pid, startedAt);
+      return code;
+    } finally { timers.forEach(clearTimer); }
   };
 }
 
-/** Run at start, then on the interval or on new queue entries, until `shouldStop`. */
-export async function runWorkerLoop({ now, sleep, shouldStop, queueChanged, runOnce, log,
+/**
+ * A worker ended by a signal before its run yielded cannot release its lock,
+ * and the lock would stop every worker, host included, until it is 90 minutes
+ * old. The loop removes it, but only one this worker took: its process id, and
+ * taken after this run started (a reused id of an older holder does not count).
+ */
+export function releaseKilledWorkerLock(stateDir, pid, startedAtMs) {
+  const lockPath = path.join(stateDir, 'memory-worker.lock');
+  let holder;
+  try { holder = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch { return false; }
+  if (!pid || holder?.pid !== pid || !(Date.parse(holder.startedAt) >= startedAtMs - 1000)) return false;
+  try { fs.rmSync(lockPath); return true; } catch { return false; }
+}
+
+/**
+ * Run at start, then on the interval or when the queue changed since the last
+ * run started (an entry written during a run, after its drain, counts), until
+ * `shouldStop`.
+ */
+export async function runWorkerLoop({ now, sleep, shouldStop, queueStamp, runOnce, log,
   intervalMs = RUN_INTERVAL_MS, pollMs = QUEUE_POLL_MS }) {
   let lastStart = Number.NEGATIVE_INFINITY;
-  let lastEnd = Number.NEGATIVE_INFINITY;
+  let seenStamp = Number.NEGATIVE_INFINITY;
   while (!shouldStop()) {
     const due = now() - lastStart >= intervalMs;
-    const queued = !due && queueChanged(lastEnd);
+    const queued = !due && queueStamp() > seenStamp;
     if (due || queued) {
       lastStart = now();
+      seenStamp = queueStamp();
       let code;
       try { code = await runOnce(); } catch (error) { code = `spawn failed (${error?.code || 'error'})`; }
-      lastEnd = now();
-      log(`run (${queued ? 'queue' : 'interval'}) exit ${code} in ${Math.round((lastEnd - lastStart) / 1000)} s`);
+      log(`run (${queued ? 'queue' : 'interval'}) exit ${code} in ${Math.round((now() - lastStart) / 1000)} s`);
     }
     if (shouldStop()) break;
     await sleep(pollMs);
@@ -100,8 +130,16 @@ function runAsProcess() {
     return Promise.resolve(EXIT_CONFIG);
   }
   const stopper = createStopper();
-  process.once('SIGTERM', () => stopper.stop('SIGTERM'));
-  process.once('SIGINT', () => stopper.stop('SIGINT'));
+  let running = null;
+  // A stop reaches the worker as SIGTERM, which it takes when its synchronous
+  // run yields. A run that does not yield in time is killed here, inside
+  // compose's 150 s grace, so the loop is still alive to release its lock.
+  const stop = (signal) => {
+    stopper.stop(signal);
+    setTimeout(() => { if (running) signalJob(running, 'SIGKILL'); }, STOP_KILL_AFTER_MS).unref();
+  };
+  process.once('SIGTERM', () => stop('SIGTERM'));
+  process.once('SIGINT', () => stop('SIGINT'));
   const stateDir = harnessDir(os.homedir());
   const workerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory-worker.mjs');
   log(`started: every ${RUN_INTERVAL_MS / 60_000} min, queue checked every ${QUEUE_POLL_MS / 1000} s`);
@@ -109,8 +147,9 @@ function runAsProcess() {
     now: Date.now,
     sleep: stopper.sleep,
     shouldStop: stopper.shouldStop,
-    queueChanged: (since) => queueChangedSince(stateDir, since),
-    runOnce: workerRunner({ env: secrets.env, workerPath, onChild: stopper.onChild }),
+    queueStamp: () => queueStamp(stateDir),
+    runOnce: workerRunner({ env: secrets.env, workerPath, stateDir,
+      onChild: (child) => { running = child; stopper.onChild(child); } }),
     log,
   }).then(() => { log('stopped'); return 0; });
 }

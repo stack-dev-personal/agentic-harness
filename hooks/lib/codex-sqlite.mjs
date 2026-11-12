@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { captureSession } from './capture.mjs';
+import { isEncryptedTask, placeholderTask } from './codex-task.mjs';
 import { openNativeDatabase } from './native-sqlite.mjs';
 import { hostPathFlavor, isUnplaceableDevicePath, joinHostPath } from './host-paths.mjs';
 import { sessionMemoryEligibility } from './memory-policy.mjs';
@@ -65,18 +66,11 @@ const PLACEHOLDER_LOG = 'Codex delegated assignment not in native history; writi
 
 /**
  * The task line for a delegated thread whose assignment Codex did not record.
- *
- * Codex 0.166 encrypts the spawn prompt at rest, in SQLite and in the rollout
- * file alike, so it cannot be read. Per the contract change of 2026-11-04 the
- * note is written anyway: labelled by its task name and parent, carrying the
- * child's own results and activity, with this line where the task would be.
- * The line names no cause or version: it is persisted into notes, and the
- * reason may change with the next Codex release.
+ * Per the contract change of 2026-11-04 the note is written anyway: labelled by
+ * its task name and parent, carrying the child's own results and activity, with
+ * the placeholder (codex-task.mjs) where the task would be.
  */
-function placeholderAssignment(thread) {
-  const name = toPosix(thread.agentPath || '').split('/').filter(Boolean).pop() || thread.agentNickname || thread.id;
-  return `Delegated Codex task ${name}: assignment not recorded by Codex`;
-}
+const placeholderAssignment = (thread) => placeholderTask({ agentPath: thread.agentPath, agentNickname: thread.agentNickname, id: thread.id });
 
 function capability(message) {
   const error = new Error(`Codex SQLite capability unavailable: ${message}`);
@@ -230,7 +224,7 @@ function childTask(history, id, parentId) {
     const item = parseItem(row);
     const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [item.receiverThreadId, item.newThreadId];
     if (receivers.includes(id) && ['spawnAgent', 'spawn_agent', 'spawn'].includes(item.tool)
-      && typeof item.prompt === 'string' && item.prompt.trim()) return item.prompt;
+      && typeof item.prompt === 'string' && item.prompt.trim() && !isEncryptedTask(item.prompt)) return item.prompt;
   }
   return '';
 }

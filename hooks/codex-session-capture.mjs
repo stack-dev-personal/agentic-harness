@@ -9,6 +9,7 @@ import { analyseTranscript } from './lib/analyse.mjs';
 import { isSubagentHead, readCodexHead, resolveCodexTranscript } from './lib/codex-head.mjs';
 import { captureSession } from './lib/capture.mjs';
 import { captureCodexSqliteSession } from './lib/codex-sqlite.mjs';
+import { isEncryptedTask, placeholderTask } from './lib/codex-task.mjs';
 import { hostPathFlavor, joinHostPath } from './lib/host-paths.mjs';
 import { sessionMemoryEligibility } from './lib/memory-policy.mjs';
 import { queueIngest } from './lib/ingest-queue.mjs';
@@ -289,7 +290,14 @@ export function captureCodex({
   if (head.payload?.id && head.payload.id !== input.sessionId) return skip('transcript session id mismatch');
   const child = isSubagentHead(head);
   if (child && !allowSubagent) return skip('subagent transcript');
-  if (child && !ownTask) return skip('child task unavailable; inherited context excluded');
+  const spawn = head.payload?.source?.subagent?.thread_spawn;
+  const parent = head.payload?.parent_thread_id || spawn?.parent_thread_id;
+  // A delegate with no parent has no note to belong to; its context is inherited.
+  if (child && !parent) return { ...skip('child task unavailable; inherited context excluded'), action: 'unsupported' };
+  // An encrypted spawn prompt is no task (codex-task.mjs): the placeholder stands in, as from SQLite.
+  const readableTask = isEncryptedTask(ownTask) ? '' : ownTask;
+  const task = child ? readableTask || placeholderTask({ agentPath: spawn?.agent_path,
+    agentNickname: spawn?.agent_nickname || head.payload?.agent_nickname, id: input.sessionId }) : readableTask;
   // Under a host path flavor the policy judges the cwd as recorded; toPosix
   // would strip a device prefix before it is seen.
   const cwd = hostPathFlavor(env) ? String(head.payload?.cwd || input.cwd || '') : toPosix(head.payload?.cwd || input.cwd);
@@ -300,9 +308,11 @@ export function captureCodex({
   const parsed = extractCodexTurns(records, cwd, { env });
   if (child) {
     parsed.entries = parsed.entries.filter(entry => entry.type !== 'user' || Array.isArray(entry.message?.content));
-    parsed.entries.unshift({ type: 'user', origin: { kind: 'human' }, timestamp: head.timestamp, cwd, message: { content: ownTask } });
+    // A placeholder stands in only above the delegate's own activity; one that did
+    // nothing would otherwise become a note of one synthetic line.
+    if (!readableTask && !parsed.entries.some(entry => entry.type !== 'progress')) return skip('subagent did nothing; assignment not recorded');
+    parsed.entries.unshift({ type: 'user', origin: { kind: 'human' }, timestamp: head.timestamp, cwd, message: { content: task } });
   }
-  const parent = head.payload?.parent_thread_id || head.payload?.source?.subagent?.thread_spawn?.parent_thread_id;
   const latestContext = records.findLast(record => record.type === 'turn_context')?.payload;
   return captureSession({ input: { ...input, cwd, transcriptPath, sessionId: `codex-${input.sessionId}` },
     vaultRoot, entries: parsed.entries, runGit, capturedBy, stateDir, deadlineAt, env,
@@ -310,7 +320,7 @@ export function captureCodex({
     origin: parsed.origin, generator: GENERATOR,
     briefSessionId: input.sessionId,
     parentSession: parent ? `codex-${parent}` : '', childSessions,
-    promptTask: ownTask,
+    promptTask: task,
   });
 }
 

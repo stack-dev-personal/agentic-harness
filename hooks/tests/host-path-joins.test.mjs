@@ -444,7 +444,9 @@ test('an ordinary workdir is captured, and the note does not repeat it', () => {
   try {
     const result = w.run();
     assert.equal(result.written, true, `${result.action}: ${result.skip}`);
-    assert.doesNotMatch(fs.readFileSync(result.notePath, 'utf8'), /lib-ghp_notatoken/, 'model-written folder text stays out of the note');
+    const raw = fs.readFileSync(result.notePath, 'utf8');
+    assert.doesNotMatch(raw, /lib-ghp_notatoken/, 'model-written folder text stays out of the note');
+    assert.doesNotMatch(raw, /Workdir/, 'a folder judged for the policy is not a tool the session used');
   } finally { w.cleanup(); }
 });
 

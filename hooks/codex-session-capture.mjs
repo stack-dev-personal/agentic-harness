@@ -26,7 +26,7 @@ import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { extractRetrievals, retrievedLinks } from './lib/retrievals.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
 import { isoDate, toPosix } from './lib/text.mjs';
-import { extractOutcome, extractPrompts, knownSecrets, readEntries } from './lib/transcript.mjs';
+import { WORKDIR_TOOL, extractOutcome, extractPrompts, knownSecrets, readEntries } from './lib/transcript.mjs';
 
 const BUDGET_MS = 2500; // Codex permits up to three seconds for SessionEnd.
 const GENERATOR = 'codex-session-capture.mjs 1.0.0';
@@ -151,6 +151,8 @@ function nextAt(list, from) {
  * @returns {{ values: string[], unverifiable: boolean }}
  */
 function scriptWorkdirs(script) {
+  // Most scripts name no working folder: build nothing for them.
+  if (!/workdir|working_directory/.test(script)) return { values: [], unverifiable: false };
   const length = script.length;
   const commentCloses = positions(script, /\*\//g);
   // JavaScript ends a line comment at any line terminator, not only LF.
@@ -252,7 +254,7 @@ function scriptWorkdirs(script) {
  * placed the way Codex places it. A path, not a folder of the note: the text
  * is the model's, and `cwds_seen` lists only folders the transcript declared.
  */
-const workdirUse = (id, workdir) => toolUse(id, 'Workdir', { path: workdir });
+const workdirUse = (id, workdir) => toolUse(id, WORKDIR_TOOL, { path: workdir });
 
 // Escapes JSON and JavaScript read alike. Hex, code point and octal escapes
 // and a line continuation are left to JSON.parse, which refuses them: not
@@ -301,7 +303,7 @@ function nestedUses(script, callId, cwd, joinPath) {
   }
   for (const match of script.matchAll(/tools\.apply_patch\s*\(\s*/g)) {
     // Only a literal patch can be read; its body never reaches the note.
-    const patch = literalArgument(script.slice(match.index + match[0].length));
+    const patch = readLiteralAt(script, match.index + match[0].length)?.value ?? null;
     if (patch) for (const use of patchFileUses(patch, callId, cwd, uses.length, joinPath)) uses.push(use);
   }
   const rag = [...script.matchAll(/tools\.mcp__rag__(search_context|get_document)\s*\(/g)];
@@ -401,7 +403,7 @@ export function extractCodexTurns(records, sessionCwd, { env = process.env } = {
     // The older shell item: its command and working folder are in `action`.
     if (payload?.type === 'local_shell_call') {
       const id = String(payload.call_id ?? payload.id ?? `codex-${entries.length}`);
-      const action = payload.action && typeof payload.action === 'object' && !Array.isArray(payload.action) ? payload.action : {};
+      const action = plainObject(payload.action) ?? {};
       const uses = [toolUse(id, 'local_shell', {})];
       const command = Array.isArray(action.command) ? action.command.filter((part) => typeof part === 'string').join(' ') : '';
       if (command) uses.push(toolUse(`${id}:shell`, 'PowerShell', { command }));

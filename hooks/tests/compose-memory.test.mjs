@@ -58,8 +58,7 @@ test('an unset host path falls back to a folder that is never created', () => {
   for (const variable of ['CLAUDE_PROJECTS_DIR', 'CODEX_DIR', 'HARNESS_STATE_DIR_HOST']) {
     assert.match(memory, new RegExp(`\\$\\{${variable}:-\\./\\.memory-unset/[a-z-]+\\}`), `${variable} has no inert fallback`);
   }
-  assert.equal((memory.match(/create_host_path: false/g) || []).length, 4,
-    'every host bind except the vault and the archive folder (Codex makes it only on the first archive) refuses to create its source');
+  assert.equal((memory.match(/create_host_path: false/g) || []).length, 5, 'every host bind except the vault refuses to create its source');
 });
 
 test('the worker judges Windows paths and is told the host home and vault', () => {
@@ -79,7 +78,8 @@ test('a stop gives the loop time to kill a run that does not yield and release i
     `stop_grace_period ${grace[1]}s leaves under 30 s after the loop's kill at ${STOP_KILL_AFTER_MS / 1000}s`);
 });
 
-test('a host that never archived a Codex thread still starts: only that folder may be created', () => {
-  const created = binds(memory).filter((mount) => mount.createsSource).map((mount) => mount.target);
-  assert.deepEqual(created, ['/home/harness/.codex/archived_sessions']);
+test('no host folder is created by the service: the cutover makes the archive folder', () => {
+  assert.deepEqual(binds(memory).filter((mount) => mount.createsSource).map((mount) => mount.target), []);
+  const docs = fs.readFileSync(path.join(REPO, 'docs', 'model-agnostic-memory.md'), 'utf8');
+  assert.match(docs, /archived_sessions/, 'the cutover says to create the archive folder');
 });

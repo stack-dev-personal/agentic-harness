@@ -102,3 +102,6 @@ $RECYCLE.BIN/
 # Per-machine Claude Code settings. `.claude/skills/` is committed on purpose,
 # so the directory cannot be ignored wholesale.
 .claude/settings.local.json
+
+# The inert fallback folder compose.yaml names for an unset host path (harness-memory).
+.memory-unset/

@@ -277,6 +277,9 @@ its synchronous step and release `memory-worker.lock`.
 Cutover, in this order; the host task and the service must never both run:
 
 1. In the host's `~/.harness/machine.env`, set `HARNESS_MEMORY_START_WORKER=0`.
+   Make sure `~/.codex/archived_sessions` exists (Codex creates it only on its
+   first archive; create it empty if it is missing): the service mounts it and
+   creates no host folder itself.
 2. Let `AgenticHarness-Memory` finish a run, then
    `Disable-ScheduledTask AgenticHarness-Memory` (disable, never delete).
 3. Baseline the Codex rollouts, first as a dry run, from the umbrella folder:

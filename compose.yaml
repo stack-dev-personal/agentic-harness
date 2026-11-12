@@ -164,15 +164,16 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # Codex makes this folder only when it first archives a thread, so it may
-      # be created here (empty). The sessions mount above still refuses an
-      # unset CODEX_DIR.
+      # Codex makes this folder only when it first archives a thread. It is not
+      # created here (Docker would make it as root on a Linux host, and under an
+      # unset CODEX_DIR inside this repo): the cutover creates it once
+      # (docs/model-agnostic-memory.md).
       - type: bind
         source: ${CODEX_DIR:-./.memory-unset/codex}/archived_sessions
         target: /home/harness/.codex/archived_sessions
         read_only: true
         bind:
-          create_host_path: true
+          create_host_path: false
       - type: bind
         source: ${HARNESS_STATE_DIR_HOST:-./.memory-unset/harness}
         target: /home/harness/.harness

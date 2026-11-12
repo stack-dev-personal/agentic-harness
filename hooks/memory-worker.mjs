@@ -16,6 +16,7 @@ import { acquirePathLock, releaseRealmLock } from './lib/realm-lock.mjs';
 import { persist } from './lib/notes-io.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { withRealmLocks } from './lib/sweep.mjs';
+import { baselineCodex } from './lib/memory-baseline.mjs';
 
 function activationTime(stateDir, now, preview) {
   const file = path.join(stateDir, 'memory-activation.json');
@@ -90,30 +91,61 @@ function previewOf(candidate, env) {
   }
 }
 
-/** All hooks use the same queue. Legacy queue names are drained during migration. */
-export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
-  preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
+/**
+ * The settings every worker mode needs, or why it must not run: switched off on
+ * purpose is a clean no-op; any other reason is a broken setting (a protected
+ * root this platform cannot read, an unknown path flavor, a missing host home or
+ * vault under a flavor), and the worker must not look healthy while it does nothing.
+ */
+function prepare({ home, env, log }) {
   const loaded = loadMachineEnv(env, home, log);
   const gate = memoryEligibility({ env: loaded });
   if (!gate.allowed) {
-    // Switched off on purpose is a clean no-op. Any other reason is a broken
-    // setting (a protected root this platform cannot read, an unknown path
-    // flavor): the worker must not look healthy while it captures nothing.
-    if (gate.reason === PERSISTENCE_DISABLED) return { disabled: true, failed: 0 };
+    if (gate.reason === PERSISTENCE_DISABLED) return { stop: { disabled: true, failed: 0 } };
     log(`memory worker blocked: ${gate.reason}; nothing was captured or ingested`);
-    return { disabled: true, failed: 1 };
+    return { stop: { disabled: true, failed: 1 } };
   }
-  // Under a host path flavor the host's home and vault are part of the
-  // configuration: without them filing would read this process's own home.
   try { hostSettings(loaded); } catch (error) {
     log(`memory worker blocked: ${error.message}; nothing was captured or ingested`);
-    return { disabled: true, failed: 1 };
+    return { stop: { disabled: true, failed: 1 } };
   }
   installExtraRulesFrom(loaded, log);
-  const vaultRoot = loaded.HARNESS_VAULT || path.join(home, 'vault');
   const stateDir = harnessDir(home);
   fs.mkdirSync(stateDir, { recursive: true });
-  const lock = acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+  return { loaded, stateDir, vaultRoot: loaded.HARNESS_VAULT || path.join(home, 'vault') };
+}
+
+const lockWorker = (stateDir) => acquirePathLock(path.join(stateDir, 'memory-worker.lock'), { owner: 'memory worker', staleMs: 90 * 60_000 });
+
+/**
+ * `--baseline codex`: record each Codex rollout that its note already covers as
+ * captured (memory-baseline.mjs), so a worker that switches from the database
+ * to the rollouts does not recapture them. Run once at cutover, after the host
+ * worker's last run. `dryRun` counts without saving.
+ */
+export async function runCodexBaseline({ home = os.homedir(), env = process.env, log = () => {}, dryRun = false } = {}) {
+  const ready = prepare({ home, env, log });
+  if (ready.stop) return ready.stop;
+  const { loaded, stateDir, vaultRoot } = ready;
+  const lock = lockWorker(stateDir);
+  if (!lock.ok) return { busy: true, failed: 0 };
+  try {
+    const since = activationTime(stateDir, Date.now(), true);
+    const candidates = discoverCodexSessions({ home, vaultRoot, env: loaded, since, log });
+    const { checkpoints, counts } = baselineCodex({ candidates, vaultRoot, env: loaded });
+    if (!dryRun) saveMemoryCheckpoints({ stateDir, vaultRoot, checkpoints, env: loaded });
+    log(`baseline codex${dryRun ? ' (dry run)' : ''}: ${JSON.stringify(counts)}`);
+    return { ...counts, saved: !dryRun, failed: counts.unreadable };
+  } finally { releaseRealmLock(lock); }
+}
+
+/** All hooks use the same queue. Legacy queue names are drained during migration. */
+export async function runMemoryWorker({ home = os.homedir(), env = process.env, log = () => {},
+  preview = false, candidates: suppliedCandidates, drain = drainIngest, queue = queueIngest } = {}) {
+  const ready = prepare({ home, env, log });
+  if (ready.stop) return ready.stop;
+  const { loaded, stateDir, vaultRoot } = ready;
+  const lock = lockWorker(stateDir);
   if (!lock.ok) return { busy: true, failed: 0 };
   try {
     const before = preview ? { ingested: 0, failed: [] } : drain({ env: loaded, log });
@@ -145,10 +177,17 @@ if (isEntryPoint(import.meta.url)) {
   const log = createLogger(path.join(harnessDir(), 'memory-worker.log'));
   try {
     const healthOnly = process.argv.includes('--health');
+    const baseline = process.argv.indexOf('--baseline');
+    if (baseline !== -1 && process.argv[baseline + 1] !== 'codex') throw new Error('usage: memory-worker.mjs --baseline codex [--dry-run]');
     const result = healthOnly ? JSON.parse(fs.readFileSync(path.join(harnessDir(), 'memory-health.json'), 'utf8'))
-      : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
+      : baseline !== -1 ? await runCodexBaseline({ log, dryRun: process.argv.includes('--dry-run') })
+        : await runMemoryWorker({ log, preview: process.argv.includes('--preview') });
     if (healthOnly && Date.now() - Date.parse(result.checkedAt) > 15 * 60_000) result.failed = (result.failed || 0) + 1;
-    if (healthOnly || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');
+    if (healthOnly || baseline !== -1 || process.argv.includes('--preview')) process.stdout.write(JSON.stringify(result) + '\n');
     if (result.failed) process.exitCode = 1;
-  } catch { log('memory worker failed; pending work retained'); process.exitCode = 1; }
+  } catch (error) {
+    if (/^usage:/.test(error?.message || '')) process.stderr.write(`${error.message}\n`);
+    else log('memory worker failed; pending work retained');
+    process.exitCode = 1;
+  }
 }
